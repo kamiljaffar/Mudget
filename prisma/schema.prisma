@@ -2,10 +2,11 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Neon Postgres (separate `mudget` database in the Neon project).
+// Neon Postgres — alag `mudget` database in the same Neon project.
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {

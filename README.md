@@ -1,99 +1,77 @@
-# Mudget — Monthly Budget Tracker
+# Mudget
 
-A small, mobile-first web app for managing a **monthly budget by hand**: set the month's
-income, write down your pre-defined budget items, then log every daily expense. Each
-expense is deducted from one of three categories so you always know how much is left.
+Mobile-first monthly budget tracker — income, daily expenses, planned items and
+**your own budget rules** (60/25/15 is just the default), synced to a Neon
+Postgres database so you can sign in from any device.
 
-## The 60 / 25 / 15 rule
+**Live:** https://mudget-rho.vercel.app · **Repo:** https://github.com/kamiljaffar/Mudget
 
-| Category          | Share | Typical use                          |
-| ----------------- | ----- | ------------------------------------ |
-| **Basic**         | 60 %  | Rent, groceries, utilities, transport |
-| **Wants**         | 25 %  | Shopping, eating out, fun, subscriptions |
-| **Loans / Investments** | 15 % | Debt payments, savings, investments |
+## Features
 
-The limits are calculated from the month's income (`income × 60 %`, etc.). Daily expenses
-are deducted from the category you assign them to, so every category shows:
+| Area | What it does |
+| --- | --- |
+| **Auth** | Email + password signup/login, scrypt-hashed passwords, JWT cookie session (30 days), profile page (name, currency, avatar colour, password change, delete account). |
+| **Storage** | Neon Postgres + Prisma. Tables: `User`, `Rule`, `RuleCategory`, `MonthPlan`, `BudgetItem`, `Expense`. Nothing lives in `localStorage` anymore — but a one-tap **import banner** migrates data from the old browser-only version. |
+| **Rules** | The Budget tab manages rules: 60/25/15 ships active, 50/30/20 ships inactive. Create your own (name + N categories, labels, percentages, colours, total must be 100 %) and hit **Apply this rule** — every calculation in the app follows the active rule. |
+| **Planned items → expense** | Each budget item has a tick. Ticking it creates **that day's expense** for the same name/amount/category (unique link, badge `expense added`); unticking removes it. |
+| **Daily Log** | Add/edit/delete expenses with date, amount, category (from the active rule) and note; search + category filter chips. |
+| **Reports** | Per-item cost (how often and how much the same thing was bought, vs its budget), daily spending chart, rule-split bar. |
+| **Backup** | JSON **Export/Import** in Budget + Profile (full replace, keeps expense ↔ item links), plus reset. Data is also synced in the database. |
+| **UI** | Tailwind CSS 4 + framer-motion: animated nav pills, staggered lists, spring modals, animated progress bars, toasts, gradient hero cards. Fully responsive with a bottom tab bar on mobile. |
 
-- **limit** (rule share of income)
-- **planned** (sum of your pre-defined budget items)
-- **spent** (sum of the daily log)
-- **remaining** (limit − spent)
+## Stack
 
-## Tabs
+- **Next.js 15** (App Router) · **React 19** · **TypeScript** · **Tailwind CSS 4** · **framer-motion** · **lucide-react**
+- **Neon Postgres** + **Prisma** (separate `mudget` database in the Neon project)
+- **jose** for JWT sessions, **node:crypto scrypt** for password hashing — no third-party auth provider
 
-1. **Dashboard** — overview: income, spent, remaining, projected spend, per-category
-   progress, the 60/25/15 bar, recent activity and top spending items.
-2. **Daily Log** — add/edit/delete expenses (date, item, amount, category, note). If the
-   item name matches a pre-defined budget item, the category is picked automatically.
-   Entries are grouped by day with a per-day total.
-3. **Reports** — **cost per item**: every purchase of the same item is merged into one row
-   showing total spent, purchase count, average cost and progress against its budget.
-   Also includes a daily spending chart and the category breakdown.
-4. **Monthly Budget** — monthly income, currency, the pre-defined budget items grouped by
-   category (with warnings when a category is planned over its 60/25/15 limit), plus
-   backup (export/import JSON) and reset.
-
-## Tech
-
-- [Next.js 15](https://nextjs.org/) (App Router) + React 19 + TypeScript
-- [Tailwind CSS 4](https://tailwindcss.com/)
-- `lucide-react` icons
-- **No database, no login** — all data lives in the browser's `localStorage`
-  (key `mudget.state.v1`). Use *Monthly Budget → Export JSON* for a backup.
-
-## Run locally
+## Getting started
 
 ```bash
 npm install
+cp .env.example .env      # then fill DATABASE_URL / DIRECT_URL / JWT_SECRET
+npm run db:push           # creates the tables (uses DIRECT_URL)
 npm run dev
 ```
 
-Open http://localhost:3000
+Scripts: `npm run dev`, `npm run build`, `npm start`, `npm run db:push`,
+`npm run db:studio`.
 
-## Deploy to Vercel
-
-The project is a plain Next.js app, so Vercel needs no configuration:
-
-1. Push this repository to GitHub.
-2. In Vercel: **Add New → Project → Import** the repository.
-3. Click **Deploy** — framework preset *Next.js* is detected automatically.
-
-Or from the CLI:
-
-```bash
-npm i -g vercel
-vercel        # preview
-vercel --prod # production
-```
-
-## Project structure
+`.env` needs:
 
 ```
-src/
-  app/                 # routes (thin server pages)
-    dashboard|log|reports|budget/page.tsx
-  components/
-    AppShell.tsx       # header + mobile bottom navigation
-    MonthSwitcher.tsx  # month picker used by every tab
-    DashboardView.tsx  # client view: dashboard tab
-    LogView.tsx        # client view: daily log tab
-    ReportsView.tsx    # client view: reports tab
-    BudgetView.tsx     # client view: monthly budget tab
-    icons.ts           # lucide icons (deep imports, see note below)
-    ui.tsx             # shared UI atoms (Card, Chip, ProgressBar…)
-  lib/
-    types.ts           # AppState / Expense / BudgetItem models
-    categories.ts      # the three categories + their rule percentages
-    calc.ts            # 60/25/15 calculations, per-item and per-day stats
-    store.tsx          # React context + localStorage persistence
-    format.ts          # money/date helpers
+DATABASE_URL="postgresql://…-pooler…/mudget?sslmode=require"   # app queries
+DIRECT_URL="postgresql://…/mudget?sslmode=require"              # prisma db push
+JWT_SECRET="<long random hex>"
 ```
 
-### Note on `components/icons.ts`
+> `DATABASE_URL` points at the Neon **pooler** endpoint and `DIRECT_URL` at the
+> direct endpoint — Prisma Migrate/`db push` refuses to run over PgBouncer, so
+> the schema is pushed through `DIRECT_URL`.
 
-Icons are imported from `lucide-react/icons/<name>` instead of the `lucide-react` barrel.
-Next.js enables `optimizePackageImports` for lucide-react automatically, and that barrel
-optimizer has a known bug that can break `next build`
-([vercel/next.js#54967](https://github.com/vercel/next.js/issues/54967)). Deep imports
-bypass it.
+## Structure
+
+```
+prisma/schema.prisma        data model
+src/app/(app)/…             authenticated pages (layout guards with requireUser)
+src/app/login, signup       public auth pages
+src/lib/auth.ts             password hashing + JWT session cookie
+src/lib/actions.ts          all server actions (auth, rules, items, expenses, backup)
+src/lib/workspace.ts        loads one user's workspace (cached per request)
+src/lib/calc.ts             rule-aware calculations
+src/lib/palette.ts          category colour tokens
+src/components/*View.tsx    client views
+```
+
+Pages are thin server components that load the workspace and pass it to a client
+view; mutations run through server actions and `router.refresh()`.
+
+## Notes
+
+- **Icons:** imported from deep `lucide-react/icons/<name>` paths via
+  `src/components/icons.ts` to dodge the Next.js `optimizePackageImports`
+  barrel bug (vercel/next.js#54967).
+- **Never** turn the `(app)` page files into client components — the auth guard
+  and data loading must stay server-side.
+- Deploy: Vercel Git integration on `main` (framework `nextjs` via
+  `vercel.json`).

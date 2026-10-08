@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { randomUUID } from "crypto";
 import { prisma } from "./db";
 import {
   createSession,
@@ -213,7 +214,7 @@ export async function createRule(input: {
         },
       },
     });
-  });
+  }, { maxWait: 10_000, timeout: 15_000 });
 
   refresh();
   return done("Rule add ho gaya");
@@ -258,7 +259,7 @@ export async function updateRule(input: {
         },
       },
     });
-  });
+  }, { maxWait: 10_000, timeout: 15_000 });
 
   refresh();
   return done("Rule update ho gaya");
@@ -584,89 +585,135 @@ export async function importBackup(payload: BackupPayload): Promise<ActionResult
     if (problem) return fail(`Backup rule "${rule.name ?? "?"}": ${problem}`);
   }
 
-  let activated = false;
-  await prisma.$transaction(async (tx) => {
-    await tx.expense.deleteMany({ where: { userId: user.id } });
-    await tx.budgetItem.deleteMany({ where: { userId: user.id } });
-    await tx.monthPlan.deleteMany({ where: { userId: user.id } });
-    await tx.rule.deleteMany({ where: { userId: user.id } });
+  // One short transaction with batched inserts — Neon (ap-southeast-2) round-trips
+  // make row-by-row loops blow through Prisma's 5s interactive-transaction timeout.
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.expense.deleteMany({ where: { userId: user.id } });
+      await tx.budgetItem.deleteMany({ where: { userId: user.id } });
+      await tx.monthPlan.deleteMany({ where: { userId: user.id } });
+      await tx.rule.deleteMany({ where: { userId: user.id } });
 
-    for (const rule of rules) {
-      const keys = buildCategoryKeys(rule.categories.map((c) => c.label));
-      const isActive = !activated && (rule.isActive || rules.length === 1);
-      if (isActive) activated = true;
-      await tx.rule.create({
-        data: {
-          userId: user.id,
-          name: rule.name.trim(),
-          isActive,
-          categories: {
-            create: rule.categories.map((c, i) => ({
-              key: keys[i],
-              label: c.label.trim(),
-              percent: Math.round(c.percent),
-              color: isColorToken(c.color) ? c.color : "indigo",
-              order: i,
-            })),
-          },
-        },
-      });
-    }
-    if (!activated) {
-      const first = await tx.rule.findFirst({ where: { userId: user.id } });
-      if (first) await tx.rule.update({ where: { id: first.id }, data: { isActive: true } });
-    }
+      /* rules + their categories */
+      let activated = false;
+      const ruleRows: {
+        id: string;
+        userId: string;
+        name: string;
+        isActive: boolean;
+      }[] = [];
+      const categoryRows: {
+        ruleId: string;
+        key: string;
+        label: string;
+        percent: number;
+        color: string;
+        order: number;
+      }[] = [];
 
-    const planIds = new Map<string, string>();
-    for (const plan of plans) {
-      if (!MONTH_RE.test(plan.month)) continue;
-      const created = await tx.monthPlan.create({
-        data: { userId: user.id, month: plan.month, income: Number(plan.income) || 0 },
-      });
-      planIds.set(plan.month, created.id);
-    }
-
-    const itemIds = new Map<string, string>();
-    for (const item of items) {
-      if (!MONTH_RE.test(item.month)) continue;
-      let planId = planIds.get(item.month);
-      if (!planId) {
-        const created = await tx.monthPlan.create({
-          data: { userId: user.id, month: item.month, income: 0 },
+      for (const rule of rules) {
+        const id = randomUUID();
+        const keys = buildCategoryKeys(rule.categories.map((c) => c.label));
+        const isActive = !activated && (rule.isActive || rules.length === 1);
+        if (isActive) activated = true;
+        ruleRows.push({ id, userId: user.id, name: rule.name.trim(), isActive });
+        rule.categories.forEach((c, i) => {
+          categoryRows.push({
+            ruleId: id,
+            key: keys[i],
+            label: c.label.trim(),
+            percent: Math.round(c.percent),
+            color: isColorToken(c.color) ? c.color : "indigo",
+            order: i,
+          });
         });
-        planId = created.id;
-        planIds.set(item.month, planId);
       }
-      const created = await tx.budgetItem.create({
-        data: {
+      if (ruleRows.length > 0) {
+        if (!activated) ruleRows[0].isActive = true;
+        await tx.rule.createMany({ data: ruleRows });
+        await tx.ruleCategory.createMany({ data: categoryRows });
+      }
+
+      /* plans — one per month (explicit ids keep the item links cheap) */
+      const incomeByMonth = new Map<string, number>();
+      for (const plan of plans) {
+        if (MONTH_RE.test(plan.month) && !incomeByMonth.has(plan.month)) {
+          incomeByMonth.set(plan.month, Number(plan.income) || 0);
+        }
+      }
+      const planIdByMonth = new Map<string, string>();
+      for (const month of incomeByMonth.keys()) {
+        planIdByMonth.set(month, randomUUID());
+      }
+      for (const item of items) {
+        if (MONTH_RE.test(item.month) && !planIdByMonth.has(item.month)) {
+          planIdByMonth.set(item.month, randomUUID());
+        }
+      }
+      if (planIdByMonth.size > 0) {
+        await tx.monthPlan.createMany({
+          data: Array.from(planIdByMonth, ([month, id]) => ({
+            id,
+            userId: user.id,
+            month,
+            income: incomeByMonth.get(month) ?? 0,
+          })),
+        });
+      }
+
+      /* planned items */
+      const itemIdByOldId = new Map<string, string>();
+      const itemRows: {
+        id: string;
+        userId: string;
+        planId: string;
+        name: string;
+        amount: number;
+        categoryKey: string;
+      }[] = [];
+      for (const item of items) {
+        if (!MONTH_RE.test(item.month)) continue;
+        const id = randomUUID();
+        if (item.id) itemIdByOldId.set(item.id, id);
+        itemRows.push({
+          id,
           userId: user.id,
-          planId,
+          planId: planIdByMonth.get(item.month) as string,
           name: String(item.name ?? "").slice(0, 120),
           amount: Number(item.amount) || 0,
           categoryKey: item.categoryKey ?? "basic",
-        },
-      });
-      if (item.id) itemIds.set(item.id, created.id);
-    }
+        });
+      }
+      if (itemRows.length > 0) await tx.budgetItem.createMany({ data: itemRows });
 
-    for (const expense of expenses) {
-      if (!DATE_RE.test(expense.date)) continue;
-      const linked = expense.budgetItemId
-        ? (itemIds.get(expense.budgetItemId) ?? null)
-        : null;
-      await tx.expense.create({
-        data: {
+      /* expenses (budgetItemId remapped to the new item ids) */
+      const expenseRows: {
+        userId: string;
+        date: string;
+        item: string;
+        amount: number;
+        categoryKey: string;
+        note: string | null;
+        budgetItemId: string | null;
+      }[] = [];
+      for (const expense of expenses) {
+        if (!DATE_RE.test(expense.date)) continue;
+        expenseRows.push({
           userId: user.id,
           date: expense.date,
           item: String(expense.item ?? "").slice(0, 120),
           amount: Number(expense.amount) || 0,
           categoryKey: expense.categoryKey ?? "basic",
           note: expense.note ? String(expense.note).slice(0, 240) : null,
-          budgetItemId: linked,
-        },
-      });
-    }
-  });
+          budgetItemId: expense.budgetItemId
+            ? (itemIdByOldId.get(expense.budgetItemId) ?? null)
+            : null,
+        });
+      }
+      if (expenseRows.length > 0) await tx.expense.createMany({ data: expenseRows });
+    },
+    { maxWait: 10_000, timeout: 30_000 },
+  );
 
   refresh();
   return done("Backup restore ho gaya");
@@ -676,12 +723,15 @@ export async function resetAllData(): Promise<ActionResult> {
   const user = await actor();
   if (!user) return fail("Session expire ho gaya — dobara login karein.");
 
-  await prisma.$transaction(async (tx) => {
-    await tx.expense.deleteMany({ where: { userId: user.id } });
-    await tx.budgetItem.deleteMany({ where: { userId: user.id } });
-    await tx.monthPlan.deleteMany({ where: { userId: user.id } });
-    await tx.rule.deleteMany({ where: { userId: user.id } });
-  });
+  await prisma.$transaction(
+    async (tx) => {
+      await tx.expense.deleteMany({ where: { userId: user.id } });
+      await tx.budgetItem.deleteMany({ where: { userId: user.id } });
+      await tx.monthPlan.deleteMany({ where: { userId: user.id } });
+      await tx.rule.deleteMany({ where: { userId: user.id } });
+    },
+    { maxWait: 10_000, timeout: 15_000 },
+  );
 
   for (const rule of DEFAULT_RULES) {
     const keys = buildCategoryKeys(rule.categories.map((c) => c.label));
