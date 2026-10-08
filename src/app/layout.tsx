@@ -1,7 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { AppShell } from "@/components/AppShell";
-import { StoreProvider } from "@/lib/store";
 
 export const metadata: Metadata = {
   title: {
@@ -9,7 +7,7 @@ export const metadata: Metadata = {
     template: "%s · Mudget",
   },
   description:
-    "Track monthly income, log daily expenses and follow the 60/25/15 budget rule across Basic, Wants and Loans/Investments.",
+    "Track monthly income, log daily expenses and apply your own budget rules (60/25/15 or any split you like) — synced across all your devices.",
 };
 
 export const viewport: Viewport = {
@@ -22,11 +20,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>
-        <StoreProvider>
-          <AppShell>{children}</AppShell>
-        </StoreProvider>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

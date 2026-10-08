@@ -1,19 +1,93 @@
-import { CATEGORIES, type CategoryInfo } from "./categories";
+import { colorStyle, colorToken, type ColorToken } from "./palette";
 import { daysInMonth, monthKey, todayISO } from "./format";
-import type { AppState, BudgetItem, CategoryId, Expense, MonthPlan } from "./types";
+import type {
+  CategoryDTO,
+  ExpenseDTO,
+  ItemDTO,
+  PlanDTO,
+  Workspace,
+} from "./types";
 
-export const EMPTY_PLAN: MonthPlan = { income: 0, items: [] };
-
-export function getPlan(state: AppState, month: string): MonthPlan {
-  return state.plans[month] ?? EMPTY_PLAN;
+/** Presentational info for one category of the active rule. */
+export interface CategoryInfo {
+  key: string;
+  label: string;
+  percent: number;
+  color: ColorToken;
+  bar: string;
+  text: string;
+  chip: string;
+  card: string;
+  soft: string;
+  /** true for the synthetic bucket of entries not matching the active rule */
+  unmatched?: boolean;
 }
 
-export function expensesOfMonth(state: AppState, month: string): Expense[] {
-  return state.expenses.filter((e) => monthKey(e.date) === month);
+export function categoryInfo(category: CategoryDTO): CategoryInfo {
+  const style = colorStyle(category.color);
+  return {
+    key: category.key,
+    label: category.label,
+    percent: category.percent,
+    color: colorToken(category.color),
+    ...style,
+  };
+}
+
+export function getIncome(plans: PlanDTO[], month: string): number {
+  return plans.find((p) => p.month === month)?.income ?? 0;
+}
+
+export function planItems(workspace: Workspace, month: string): ItemDTO[] {
+  return workspace.items.filter((i) => i.month === month);
+}
+
+export function expensesOfMonth(workspace: Workspace, month: string): ExpenseDTO[] {
+  return workspace.expenses.filter((e) => monthKey(e.date) === month);
 }
 
 export function normalizeItemName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Category chips for the active rule (+ synthetic "Other" bucket when needed). */
+export function activeCategories(
+  workspace: Workspace,
+  month?: string,
+): CategoryInfo[] {
+  const base = (workspace.activeRule?.categories ?? []).map(categoryInfo);
+  if (!month) return base;
+
+  const known = new Set(base.map((c) => c.key));
+  const foreign = new Set<string>();
+  for (const expense of expensesOfMonth(workspace, month)) {
+    if (!known.has(expense.categoryKey)) foreign.add(expense.categoryKey);
+  }
+  for (const item of planItems(workspace, month)) {
+    if (!known.has(item.categoryKey)) foreign.add(item.categoryKey);
+  }
+  if (foreign.size === 0) return base;
+
+  const style = colorStyle("rose");
+  return [
+    ...base,
+    {
+      key: "__other__",
+      label: "Other",
+      percent: 0,
+      color: "rose" as ColorToken,
+      unmatched: true,
+      ...style,
+    },
+  ];
+}
+
+export function findCategory(
+  workspace: Workspace,
+  month: string,
+  key: string,
+): CategoryInfo | undefined {
+  return activeCategories(workspace, month).find((c) => c.key === key);
 }
 
 export interface CategoryStat {
@@ -33,24 +107,26 @@ export interface CategoryStat {
   status: "ok" | "warning" | "over" | "unset";
 }
 
-export function categoryStats(state: AppState, month: string): CategoryStat[] {
-  const plan = getPlan(state, month);
-  const expenses = expensesOfMonth(state, month);
+export function categoryStats(workspace: Workspace, month: string): CategoryStat[] {
+  const income = getIncome(workspace.plans, month);
+  const expenses = expensesOfMonth(workspace, month);
+  const items = planItems(workspace, month);
 
-  return CATEGORIES.map((info) => {
-    const limit = (plan.income * info.percent) / 100;
-    const budgeted = plan.items
-      .filter((i) => i.category === info.id)
+  return activeCategories(workspace, month).map((info) => {
+    const limit = (income * info.percent) / 100;
+    const budgeted = items
+      .filter((i) => i.categoryKey === info.key)
       .reduce((sum, i) => sum + i.amount, 0);
     const spent = expenses
-      .filter((e) => e.category === info.id)
+      .filter((e) => e.categoryKey === info.key)
       .reduce((sum, e) => sum + e.amount, 0);
 
     const usedPercent = limit > 0 ? (spent / limit) * 100 : 0;
     const budgetedPercent = limit > 0 ? (budgeted / limit) * 100 : 0;
 
     let status: CategoryStat["status"] = "ok";
-    if (limit <= 0) status = spent > 0 ? "over" : "unset";
+    if (info.unmatched) status = spent > 0 || budgeted > 0 ? "warning" : "unset";
+    else if (limit <= 0) status = spent > 0 ? "over" : "unset";
     else if (usedPercent > 100) status = "over";
     else if (usedPercent >= 90) status = "warning";
     else if (budgeted > limit) status = "warning";
@@ -84,11 +160,12 @@ export interface MonthSummary {
   isCurrentMonth: boolean;
 }
 
-export function monthSummary(state: AppState, month: string): MonthSummary {
-  const plan = getPlan(state, month);
-  const expenses = expensesOfMonth(state, month);
+export function monthSummary(workspace: Workspace, month: string): MonthSummary {
+  const income = getIncome(workspace.plans, month);
+  const expenses = expensesOfMonth(workspace, month);
+  const items = planItems(workspace, month);
   const spent = expenses.reduce((sum, e) => sum + e.amount, 0);
-  const budgeted = plan.items.reduce((sum, i) => sum + i.amount, 0);
+  const budgeted = items.reduce((sum, i) => sum + i.amount, 0);
   const total = daysInMonth(month);
   const nowMonth = todayISO().slice(0, 7);
 
@@ -100,9 +177,9 @@ export function monthSummary(state: AppState, month: string): MonthSummary {
   const dailyAverage = elapsed > 0 ? spent / elapsed : 0;
 
   return {
-    income: plan.income,
+    income,
     spent,
-    remaining: plan.income - spent,
+    remaining: income - spent,
     budgeted,
     transactionCount: expenses.length,
     uniqueItems: new Set(expenses.map((e) => normalizeItemName(e.item))).size,
@@ -118,27 +195,35 @@ export function monthSummary(state: AppState, month: string): MonthSummary {
 export interface ItemStat {
   key: string;
   name: string;
-  category: CategoryId;
+  categoryKey: string;
   total: number;
   count: number;
   average: number;
   firstDate: string;
   lastDate: string;
   budget: number | null;
+  completed: boolean;
 }
 
-export function itemStats(state: AppState, month: string): ItemStat[] {
-  const plan = getPlan(state, month);
-  const expenses = expensesOfMonth(state, month);
+export function itemStats(workspace: Workspace, month: string): ItemStat[] {
+  const items = planItems(workspace, month);
+  const expenses = expensesOfMonth(workspace, month);
 
-  const budgetByName = new Map<string, BudgetItem>();
-  for (const item of plan.items) {
+  const budgetByName = new Map<string, ItemDTO>();
+  for (const item of items) {
     budgetByName.set(normalizeItemName(item.name), item);
   }
 
   const grouped = new Map<
     string,
-    { name: string; category: CategoryId; total: number; count: number; first: string; last: string }
+    {
+      name: string;
+      categoryKey: string;
+      total: number;
+      count: number;
+      first: string;
+      last: string;
+    }
   >();
 
   for (const expense of expenses) {
@@ -148,13 +233,15 @@ export function itemStats(state: AppState, month: string): ItemStat[] {
     if (existing) {
       existing.total += expense.amount;
       existing.count += 1;
-      existing.first = expense.date < existing.first ? expense.date : existing.first;
-      existing.last = expense.date > existing.last ? expense.date : existing.last;
-      existing.category = expense.date >= existing.last ? expense.category : existing.category;
+      if (expense.date < existing.first) existing.first = expense.date;
+      if (expense.date > existing.last) {
+        existing.last = expense.date;
+        existing.categoryKey = expense.categoryKey;
+      }
     } else {
       grouped.set(key, {
         name: expense.item.trim(),
-        category: expense.category,
+        categoryKey: expense.categoryKey,
         total: expense.amount,
         count: 1,
         first: expense.date,
@@ -169,15 +256,34 @@ export function itemStats(state: AppState, month: string): ItemStat[] {
     stats.push({
       key,
       name: value.name,
-      category: budgetItem?.category ?? value.category,
+      categoryKey: budgetItem?.categoryKey ?? value.categoryKey,
       total: value.total,
       count: value.count,
       average: value.total / value.count,
       firstDate: value.first,
       lastDate: value.last,
       budget: budgetItem ? budgetItem.amount : null,
+      completed: Boolean(budgetItem?.expenseId),
     });
   });
+
+  // planned items that have no expense yet
+  for (const item of items) {
+    const key = normalizeItemName(item.name);
+    if (!key || stats.some((s) => s.key === key)) continue;
+    stats.push({
+      key,
+      name: item.name,
+      categoryKey: item.categoryKey,
+      total: 0,
+      count: 0,
+      average: 0,
+      firstDate: "",
+      lastDate: "",
+      budget: item.amount,
+      completed: Boolean(item.expenseId),
+    });
+  }
 
   return stats.sort((a, b) => b.total - a.total);
 }
@@ -188,8 +294,8 @@ export interface DayPoint {
   total: number;
 }
 
-export function dailySeries(state: AppState, month: string): DayPoint[] {
-  const expenses = expensesOfMonth(state, month);
+export function dailySeries(workspace: Workspace, month: string): DayPoint[] {
+  const expenses = expensesOfMonth(workspace, month);
   const total = daysInMonth(month);
   const byDay = new Map<string, number>();
 
@@ -205,16 +311,10 @@ export function dailySeries(state: AppState, month: string): DayPoint[] {
   return points;
 }
 
-export function findBudgetItem(
-  state: AppState,
-  month: string,
-  name: string,
-): BudgetItem | undefined {
-  const key = normalizeItemName(name);
-  if (!key) return undefined;
-  return getPlan(state, month).items.find((i) => normalizeItemName(i.name) === key);
-}
-
-export function categoryTotals(state: AppState, month: string): CategoryStat[] {
-  return categoryStats(state, month);
+/** Months that have a plan or any expense, newest first. */
+export function monthsWithData(workspace: Workspace): string[] {
+  const set = new Set<string>(workspace.plans.map((p) => p.month));
+  for (const expense of workspace.expenses) set.add(monthKey(expense.date));
+  for (const item of workspace.items) set.add(item.month);
+  return Array.from(set).sort().reverse();
 }

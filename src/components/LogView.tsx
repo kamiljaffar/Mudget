@@ -1,406 +1,467 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Calendar, Check, Pencil, Plus, Search, Trash2, X } from "@/components/icons";
-import { MonthSwitcher } from "@/components/MonthSwitcher";
+import clsx from "clsx";
+import { useMemo, useState } from "react";
+import { motion } from "framer-motion";
+import {
+  Check,
+  CirclePlus,
+  Pencil,
+  Search,
+  Trash2,
+  X,
+} from "@/components/icons";
+import { CategorySelect } from "@/components/fields";
 import {
   Card,
-  CardHeader,
   Chip,
   EmptyState,
+  FadeIn,
+  Modal,
   PageHeader,
-  StatCard,
+  Stagger,
+  StaggerItem,
   btnPrimary,
   btnSecondary,
   inputClass,
   labelClass,
-  selectClass,
 } from "@/components/ui";
-import { CATEGORIES, CATEGORY_MAP } from "@/lib/categories";
-import { expensesOfMonth, findBudgetItem, monthSummary } from "@/lib/calc";
-import { dayLabel, formatMoney, todayISO } from "@/lib/format";
-import { useApp } from "@/lib/store";
-import type { CategoryId } from "@/lib/types";
+import { MonthSwitcher } from "@/components/MonthSwitcher";
+import { activeCategories, expensesOfMonth } from "@/lib/calc";
+import { dayLabel, formatMoney, monthLabel, todayISO } from "@/lib/format";
+import { useMonth, useToast } from "@/lib/providers";
+import {
+  addExpense,
+  deleteExpense,
+  updateExpense,
+} from "@/lib/actions";
+import { useAction } from "@/lib/useAction";
+import type { ExpenseDTO, Workspace } from "@/lib/types";
 
 interface FormState {
   date: string;
   item: string;
   amount: string;
-  category: CategoryId;
+  categoryKey: string;
   note: string;
 }
 
-const emptyForm = (): FormState => ({
-  date: "",
+const emptyForm = (categoryKey: string): FormState => ({
+  date: todayISO(),
   item: "",
   amount: "",
-  category: "basic",
+  categoryKey,
   note: "",
 });
 
-export function LogView() {
-  const { state, hydrated, addExpense, updateExpense, removeExpense } = useApp();
-  const month = state.selectedMonth;
-  const currency = state.currency;
+export function LogView({ workspace }: { workspace: Workspace }) {
+  const { month } = useMonth();
+  const { notify } = useToast();
+  const currency = workspace.profile.currency;
+  const categories = activeCategories(workspace, month);
 
-  const [form, setForm] = useState<FormState>(emptyForm);
-  const [editId, setEditId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [matched, setMatched] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    setForm((prev) => ({ ...prev, date: prev.date || todayISO() }));
-  }, [hydrated]);
-
-  // when the item name matches a predefined budget item, pull its category automatically
-  useEffect(() => {
-    if (!hydrated) return;
-    const match = findBudgetItem(state, month, form.item);
-    setMatched(match ? match.name : null);
-    if (match && form.item.trim() !== "" && form.category !== match.category) {
-      setForm((prev) => ({ ...prev, category: match.category }));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.item, month, hydrated]);
-
-  const summary = monthSummary(state, month);
-  const expenses = useMemo(
-    () =>
-      expensesOfMonth(state, month)
-        .slice()
-        .sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1)),
-    [state, month],
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<ExpenseDTO | null>(null);
+  const [form, setForm] = useState<FormState>(() =>
+    emptyForm(categories[0]?.key ?? "basic"),
   );
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+
+  const add = useAction(addExpense);
+  const update = useAction(updateExpense);
+  const remove = useAction(deleteExpense);
+
+  const all = expensesOfMonth(workspace, month);
+  const total = all.reduce((sum, expense) => sum + expense.amount, 0);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return expenses;
-    return expenses.filter(
-      (e) =>
-        e.item.toLowerCase().includes(q) ||
-        (e.note ?? "").toLowerCase().includes(q) ||
-        e.category.includes(q),
-    );
-  }, [expenses, query]);
+    const needle = query.trim().toLowerCase();
+    return all.filter((expense) => {
+      if (categoryFilter !== "all" && expense.categoryKey !== categoryFilter)
+        return false;
+      if (!needle) return true;
+      return (
+        expense.item.toLowerCase().includes(needle) ||
+        (expense.note ?? "").toLowerCase().includes(needle)
+      );
+    });
+  }, [all, query, categoryFilter]);
 
-  const groups = useMemo(() => {
-    const map = new Map<string, typeof filtered>();
+  const grouped = useMemo(() => {
+    const map = new Map<string, ExpenseDTO[]>();
     for (const expense of filtered) {
       const list = map.get(expense.date) ?? [];
       list.push(expense);
       map.set(expense.date, list);
     }
-    return Array.from(map.entries()).map(([date, list]) => ({
-      date,
-      list,
-      total: list.reduce((sum, e) => sum + e.amount, 0),
-    }));
+    return Array.from(map.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1));
   }, [filtered]);
 
-  const todayTotal = expenses
-    .filter((e) => e.date === todayISO())
-    .reduce((sum, e) => sum + e.amount, 0);
-
-  const suggestions = useMemo(() => {
-    const names = new Set<string>();
-    for (const item of state.plans[month]?.items ?? []) names.add(item.name);
-    for (const expense of state.expenses) names.add(expense.item);
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [state.plans, state.expenses, month]);
-
-  function resetForm() {
-    setForm({ ...emptyForm(), date: todayISO() });
-    setEditId(null);
-    setError(null);
+  function openAdd() {
+    setEditing(null);
+    setForm(emptyForm(categories[0]?.key ?? "basic"));
+    setOpen(true);
   }
 
-  function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    const trimmed = form.item.trim();
-    const value = Number(form.amount);
-    if (!trimmed) {
-      setError("Item name is required.");
-      return;
-    }
-    if (!Number.isFinite(value) || value <= 0) {
-      setError("Enter an amount greater than 0.");
-      return;
-    }
-    const date = form.date || todayISO();
-    const payload = {
-      date,
-      item: trimmed,
-      amount: value,
-      category: form.category,
-      note: form.note.trim() || undefined,
-    };
-
-    if (editId) updateExpense(editId, payload);
-    else addExpense(payload);
-
-    resetForm();
-  }
-
-  function startEdit(expense: (typeof expenses)[number]) {
-    setEditId(expense.id);
+  function openEdit(expense: ExpenseDTO) {
+    setEditing(expense);
     setForm({
       date: expense.date,
       item: expense.item,
       amount: String(expense.amount),
-      category: expense.category,
+      categoryKey: expense.categoryKey,
       note: expense.note ?? "",
     });
-    setError(null);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setOpen(true);
   }
 
-  if (!hydrated) {
-    return (
-      <div className="grid gap-4">
-        <div className="h-10 w-56 animate-pulse rounded-xl bg-slate-200" />
-        <div className="h-72 animate-pulse rounded-2xl bg-slate-200" />
-        <div className="h-48 animate-pulse rounded-2xl bg-slate-200" />
-      </div>
-    );
+  async function submit() {
+    const amount = Number(form.amount);
+    if (!form.item.trim()) {
+      notify("Item ka naam likhein.", "error");
+      return;
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      notify("Amount 0 se zyada hona chahiye.", "error");
+      return;
+    }
+
+    const result = editing
+      ? await update.run({
+          id: editing.id,
+          date: form.date,
+          item: form.item,
+          amount,
+          categoryKey: form.categoryKey,
+          note: form.note,
+        })
+      : await add.run({
+          date: form.date,
+          item: form.item,
+          amount,
+          categoryKey: form.categoryKey,
+          note: form.note,
+        });
+
+    if (result?.ok) setOpen(false);
   }
 
   return (
-    <div className="grid gap-5">
+    <div className="space-y-5">
       <PageHeader
         title="Daily Log"
-        subtitle="Every expense is deducted from its 60/25/15 category"
+        subtitle={`${monthLabel(month)} · ${all.length} expenses · ${formatMoney(total, currency)}`}
       >
         <MonthSwitcher />
+        <button type="button" onClick={openAdd} className={btnPrimary}>
+          <CirclePlus className="h-4 w-4" />
+          Add expense
+        </button>
       </PageHeader>
 
-      <div className="grid grid-cols-3 gap-3">
-        <StatCard
-          label="Spent today"
-          value={formatMoney(todayTotal, currency)}
-          accent="text-rose-600"
-        />
-        <StatCard
-          label="This month"
-          value={formatMoney(summary.spent, currency)}
-          accent="text-slate-900"
-        />
-        <StatCard
-          label="Left"
-          value={formatMoney(summary.remaining, currency)}
-          accent={summary.remaining < 0 ? "text-rose-600" : "text-emerald-600"}
-        />
-      </div>
-
-      {/* entry form */}
-      <Card>
-        <CardHeader
-          title={editId ? "Edit expense" : "Log an expense"}
-          subtitle="Pick the category the money came from"
-          action={
-            editId ? (
-              <button type="button" className={btnSecondary} onClick={resetForm}>
-                <X className="h-4 w-4" /> Cancel edit
-              </button>
-            ) : null
-          }
-        />
-        <form onSubmit={handleSubmit} className="grid gap-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className={labelClass} htmlFor="date">
-                Date
-              </label>
-              <input
-                id="date"
-                type="date"
-                className={inputClass}
-                value={form.date}
-                onChange={(e) => setForm((prev) => ({ ...prev, date: e.target.value }))}
-              />
-            </div>
-            <div>
-              <label className={labelClass} htmlFor="amount">
-                Amount
-              </label>
-              <input
-                id="amount"
-                type="number"
-                min={0}
-                step="any"
-                inputMode="decimal"
-                className={inputClass}
-                placeholder="0"
-                value={form.amount}
-                onChange={(e) => setForm((prev) => ({ ...prev, amount: e.target.value }))}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className={labelClass} htmlFor="item">
-              Item / what did you buy
-            </label>
+      {/* filters */}
+      <FadeIn>
+        <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input
-              id="item"
-              className={inputClass}
-              list="item-suggestions"
-              placeholder="e.g. Groceries, Fuel, Milk"
-              value={form.item}
-              onChange={(e) => setForm((prev) => ({ ...prev, item: e.target.value }))}
+              className={clsx(inputClass, "pl-10")}
+              placeholder="Item ya note search karein…"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
             />
-            <datalist id="item-suggestions">
-              {suggestions.map((name) => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
-            {matched ? (
-              <p className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-indigo-600">
-                <Check className="h-3.5 w-3.5" /> Matches budget item “{matched}” — category set
-                automatically.
-              </p>
+            {query ? (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                aria-label="Clear search"
+                className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             ) : null}
           </div>
 
-          <div>
-            <span className={labelClass}>Category (60 / 25 / 15)</span>
-            <div className="grid grid-cols-3 gap-2">
-              {CATEGORIES.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => setForm((prev) => ({ ...prev, category: c.id }))}
-                  className={`rounded-xl border px-2 py-2.5 text-center text-xs font-semibold transition ${
-                    form.category === c.id
-                      ? `${c.chip} ring-1 ring-inset`
-                      : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
-                  }`}
-                >
-                  <span className="block text-[10px] font-bold opacity-70">{c.percent}%</span>
-                  {c.short}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className={labelClass} htmlFor="note">
-              Note (optional)
-            </label>
-            <input
-              id="note"
-              className={inputClass}
-              placeholder="e.g. monthly ration from Ittehad store"
-              value={form.note}
-              onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
+          <div className="flex gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+            <FilterChip
+              active={categoryFilter === "all"}
+              onClick={() => setCategoryFilter("all")}
+              label="All"
             />
+            {categories.map((category) => (
+              <FilterChip
+                key={category.key}
+                active={categoryFilter === category.key}
+                onClick={() => setCategoryFilter(category.key)}
+                label={category.label}
+                barClass={category.bar}
+              />
+            ))}
           </div>
-
-          {error ? <p className="text-xs font-medium text-rose-600">{error}</p> : null}
-
-          <button type="submit" className={`${btnPrimary} w-full sm:w-auto sm:justify-self-start`}>
-            <Plus className="h-4 w-4" />
-            {editId ? "Save changes" : "Add expense"}
-          </button>
-        </form>
-      </Card>
-
-      {/* filter */}
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            className={`${inputClass} pl-9`}
-            placeholder="Search in this month's log…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
         </div>
-        {query ? (
-          <button type="button" className={btnSecondary} onClick={() => setQuery("")}>
-            Clear
-          </button>
-        ) : null}
-      </div>
+      </FadeIn>
 
-      {/* grouped list */}
-      {groups.length === 0 ? (
-        <EmptyState
-          icon={<Calendar className="h-10 w-10" />}
-          title={query ? "Nothing matches that search" : "No expenses logged yet"}
-          description={
-            query
-              ? "Try a different keyword or clear the search."
-              : `Add your first expense above and it will be deducted from its category for ${state.selectedMonth}.`
-          }
-        />
+      {grouped.length === 0 ? (
+        <FadeIn delay={0.08}>
+          <EmptyState
+            icon={<Search className="h-8 w-8" />}
+            title={all.length === 0 ? "Is month koi expense nahi" : "Koi match nahi mila"}
+            description={
+              all.length === 0
+                ? "Roz ka kharcha yahan add karein — ya budget tab se planned item ko tick kar dein."
+                : "Filter ya search change kar ke dekhein."
+            }
+            action={
+              all.length === 0 ? (
+                <button type="button" onClick={openAdd} className={btnPrimary}>
+                  <CirclePlus className="h-4 w-4" /> Add expense
+                </button>
+              ) : undefined
+            }
+          />
+        </FadeIn>
       ) : (
-        <div className="grid gap-3">
-          {groups.map((group) => (
-            <Card key={group.date} className="p-0 overflow-hidden">
-              <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-4 py-2.5">
-                <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-600">
-                  <Calendar className="h-3.5 w-3.5 text-slate-400" />
-                  {dayLabel(group.date)}
-                </p>
-                <p className="text-xs font-bold text-slate-800">
-                  {formatMoney(group.total, currency)}
-                </p>
-              </div>
-              <ul className="divide-y divide-slate-100">
-                {group.list.map((expense) => {
-                  const info = CATEGORY_MAP[expense.category];
-                  return (
-                    <li
-                      key={expense.id}
-                      className="flex items-center justify-between gap-3 px-4 py-3"
-                    >
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="truncate text-sm font-medium text-slate-800">
-                            {expense.item}
-                          </p>
-                          <Chip className={info.chip}>{info.short}</Chip>
-                        </div>
-                        {expense.note ? (
-                          <p className="mt-0.5 truncate text-[11px] text-slate-400">
-                            {expense.note}
-                          </p>
-                        ) : null}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <span className="text-sm font-bold text-slate-900">
-                          −{formatMoney(expense.amount, currency)}
-                        </span>
-                        <button
-                          type="button"
-                          aria-label="Edit expense"
-                          onClick={() => startEdit(expense)}
-                          className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Delete expense"
-                          onClick={() => {
-                            if (editId === expense.id) resetForm();
-                            removeExpense(expense.id);
-                          }}
-                          className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </Card>
-          ))}
+        <div className="space-y-4">
+          {grouped.map(([date, list], groupIndex) => {
+            const dayTotal = list.reduce((sum, e) => sum + e.amount, 0);
+            return (
+              <FadeIn key={date} delay={Math.min(groupIndex * 0.05, 0.3)}>
+                <Card className="p-0 sm:p-0">
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+                    <p className="text-xs font-bold uppercase tracking-wide text-slate-500">
+                      {dayLabel(date)}
+                    </p>
+                    <p className="text-sm font-bold text-slate-900">
+                      {formatMoney(dayTotal, currency)}
+                    </p>
+                  </div>
+
+                  <Stagger gap={0.04}>
+                    {list.map((expense) => {
+                      const info = categories.find(
+                        (category) => category.key === expense.categoryKey,
+                      );
+                      return (
+                        <StaggerItem key={expense.id}>
+                          <div className="group flex items-center justify-between gap-3 border-b border-slate-50 px-4 py-3 last:border-b-0 transition hover:bg-slate-50/70">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <span
+                                className={clsx(
+                                  "h-9 w-1.5 shrink-0 rounded-full",
+                                  info?.bar ?? "bg-slate-300",
+                                )}
+                              />
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold text-slate-800">
+                                  {expense.item}
+                                  {expense.budgetItemId ? (
+                                    <Chip className="ml-2 bg-indigo-50 text-indigo-600 ring-indigo-200">
+                                      from plan
+                                    </Chip>
+                                  ) : null}
+                                </p>
+                                <p className="truncate text-[11px] text-slate-500">
+                                  {info?.label ?? expense.categoryKey}
+                                  {expense.note ? ` · ${expense.note}` : ""}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              <span className="text-sm font-bold text-slate-900">
+                                {formatMoney(expense.amount, currency)}
+                              </span>
+                              <div className="flex items-center opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100">
+                                <IconButton
+                                  label="Edit"
+                                  onClick={() => openEdit(expense)}
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </IconButton>
+                                <IconButton
+                                  label="Delete"
+                                  danger
+                                  armed={pendingDelete === expense.id}
+                                  onClick={() => {
+                                    if (pendingDelete === expense.id) {
+                                      setPendingDelete(null);
+                                      void remove.run({ id: expense.id });
+                                    } else {
+                                      setPendingDelete(expense.id);
+                                      window.setTimeout(
+                                        () => setPendingDelete(null),
+                                        3000,
+                                      );
+                                    }
+                                  }}
+                                >
+                                  {pendingDelete === expense.id ? (
+                                    <Check className="h-3.5 w-3.5" />
+                                  ) : (
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  )}
+                                </IconButton>
+                              </div>
+                            </div>
+                          </div>
+                        </StaggerItem>
+                      );
+                    })}
+                  </Stagger>
+                </Card>
+              </FadeIn>
+            );
+          })}
         </div>
       )}
+
+      <Modal
+        open={open}
+        onClose={() => setOpen(false)}
+        title={editing ? "Edit expense" : "Add expense"}
+        subtitle={monthLabel(month)}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className={btnSecondary}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={add.busy || update.busy}
+              className={btnPrimary}
+            >
+              {add.busy || update.busy ? "Saving…" : editing ? "Save changes" : "Add expense"}
+            </button>
+          </>
+        }
+      >
+        <div className="grid gap-3.5 sm:grid-cols-2">
+          <label className="block sm:col-span-2">
+            <span className={labelClass}>Item</span>
+            <input
+              className={inputClass}
+              value={form.item}
+              onChange={(event) => setForm({ ...form, item: event.target.value })}
+              placeholder="e.g. Groceries"
+              autoFocus
+            />
+          </label>
+
+          <label className="block">
+            <span className={labelClass}>Amount</span>
+            <input
+              type="number"
+              min="0"
+              step="any"
+              inputMode="decimal"
+              className={inputClass}
+              value={form.amount}
+              onChange={(event) => setForm({ ...form, amount: event.target.value })}
+              placeholder="0"
+            />
+          </label>
+
+          <label className="block">
+            <span className={labelClass}>Date</span>
+            <input
+              type="date"
+              className={inputClass}
+              value={form.date}
+              onChange={(event) => setForm({ ...form, date: event.target.value })}
+            />
+          </label>
+
+          <label className="block sm:col-span-2">
+            <span className={labelClass}>Category (rule)</span>
+            <CategorySelect
+              categories={categories}
+              value={form.categoryKey}
+              onChange={(key) => setForm({ ...form, categoryKey: key })}
+              allowOther
+            />
+          </label>
+
+          <label className="block sm:col-span-2">
+            <span className={labelClass}>Note (optional)</span>
+            <input
+              className={inputClass}
+              value={form.note}
+              onChange={(event) => setForm({ ...form, note: event.target.value })}
+              placeholder="e.g. weekly bazaar"
+            />
+          </label>
+        </div>
+      </Modal>
     </div>
+  );
+}
+
+function FilterChip({
+  active,
+  onClick,
+  label,
+  barClass,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  barClass?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        "flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition active:scale-95",
+        active
+          ? "border-indigo-600 bg-indigo-600 text-white shadow-sm shadow-indigo-500/30"
+          : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
+      )}
+    >
+      {barClass ? (
+        <span className={clsx("h-2 w-2 rounded-full", barClass)} />
+      ) : null}
+      {label}
+    </button>
+  );
+}
+
+function IconButton({
+  children,
+  label,
+  onClick,
+  danger,
+  armed,
+}: {
+  children: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  armed?: boolean;
+}) {
+  return (
+    <motion.button
+      type="button"
+      aria-label={label}
+      onClick={onClick}
+      whileTap={{ scale: 0.9 }}
+      className={clsx(
+        "grid h-8 w-8 place-items-center rounded-lg transition",
+        armed
+          ? "bg-rose-600 text-white"
+          : danger
+            ? "text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+            : "text-slate-400 hover:bg-indigo-50 hover:text-indigo-600",
+      )}
+    >
+      {children}
+    </motion.button>
   );
 }

@@ -1,0 +1,112 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Neon Postgres (separate `mudget` database in the Neon project).
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  // preferences
+  currency     String   @default("Rs")
+  avatarColor  String   @default("indigo")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  rules    Rule[]
+  plans    MonthPlan[]
+  items    BudgetItem[]
+  expenses Expense[]
+}
+
+// A budget rule is a named split of income, e.g. "60/25/15".
+// Exactly one rule per user is active; it drives every 60/25/15 style calculation.
+model Rule {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  categories RuleCategory[]
+
+  @@index([userId])
+}
+
+model RuleCategory {
+  id     String @id @default(cuid())
+  ruleId String
+  // slug of the label - shared across rules so "Basic" in rule A matches "Basic" in rule B
+  key    String
+  label  String
+  percent Int
+  color  String @default("indigo")
+  order  Int    @default(0)
+
+  rule Rule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleId, key])
+  @@index([ruleId])
+}
+
+// income + planned items for one month (YYYY-MM)
+model MonthPlan {
+  id       String  @id @default(cuid())
+  userId   String
+  month    String
+  income   Float   @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items BudgetItem[]
+
+  @@unique([userId, month])
+}
+
+model BudgetItem {
+  id          String    @id @default(cuid())
+  userId      String
+  planId      String
+  name        String
+  amount      Float
+  categoryKey String
+  order       Int       @default(0)
+  createdAt   DateTime  @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan    MonthPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  // set while the "complete" tick is on - the expense it created
+  expense Expense?
+
+  @@index([planId])
+  @@index([userId])
+}
+
+model Expense {
+  id          String    @id @default(cuid())
+  userId      String
+  // YYYY-MM-DD
+  date        String
+  item        String
+  amount      Float
+  categoryKey String
+  note        String?
+  // link back to the planned item that was ticked as complete
+  budgetItemId String?  @unique
+  createdAt   DateTime  @default(now())
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  budgetItem BudgetItem? @relation(fields: [budgetItemId], references: [id], onDelete: SetNull)
+
+  @@index([userId, date])
+  @@index([userId])
+}

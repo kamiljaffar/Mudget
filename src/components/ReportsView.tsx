@@ -1,68 +1,63 @@
 "use client";
 
+import clsx from "clsx";
 import { useMemo, useState } from "react";
-import { BarChart3, PackageSearch, Search } from "@/components/icons";
+import { motion } from "framer-motion";
+import {
+  BarChart3,
+  CalendarDays,
+  Search,
+  Target,
+  TrendingUp,
+} from "@/components/icons";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
 import {
   Card,
   CardHeader,
   Chip,
+  EASE,
   EmptyState,
+  FadeIn,
   PageHeader,
   ProgressBar,
   StatCard,
-  btnSecondary,
-  inputClass,
 } from "@/components/ui";
-import { CATEGORIES, CATEGORY_MAP } from "@/lib/categories";
-import { categoryStats, dailySeries, itemStats, monthSummary } from "@/lib/calc";
-import { formatMoney, percentOf } from "@/lib/format";
-import { useApp } from "@/lib/store";
-import type { CategoryId } from "@/lib/types";
+import {
+  categoryStats,
+  dailySeries,
+  itemStats,
+  monthSummary,
+} from "@/lib/calc";
+import { daysInMonth, formatMoney, monthLabel, monthShort } from "@/lib/format";
+import { useMonth } from "@/lib/providers";
+import type { Workspace } from "@/lib/types";
 
-type Filter = "all" | CategoryId;
-
-export function ReportsView() {
-  const { state, hydrated } = useApp();
-  const month = state.selectedMonth;
-  const currency = state.currency;
+export function ReportsView({ workspace }: { workspace: Workspace }) {
+  const { month } = useMonth();
+  const currency = workspace.profile.currency;
+  const summary = monthSummary(workspace, month);
+  const stats = categoryStats(workspace, month);
+  const series = useMemo(() => dailySeries(workspace, month), [workspace, month]);
+  const items = useMemo(() => itemStats(workspace, month), [workspace, month]);
 
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<Filter>("all");
 
-  const summary = monthSummary(state, month);
-  const stats = categoryStats(state, month);
-  const allItems = useMemo(() => itemStats(state, month), [state, month]);
-  const series = useMemo(() => dailySeries(state, month), [state, month]);
+  const filteredItems = items.filter((item) =>
+    item.name.toLowerCase().includes(query.trim().toLowerCase()),
+  );
 
-  const items = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return allItems.filter((item) => {
-      const matchesFilter = filter === "all" || item.category === filter;
-      const matchesQuery =
-        !q || item.name.toLowerCase().includes(q) || CATEGORY_MAP[item.category].label.toLowerCase().includes(q);
-      return matchesFilter && matchesQuery;
-    });
-  }, [allItems, query, filter]);
-
-  const maxDay = Math.max(...series.map((p) => p.total), 1);
-  const maxItem = Math.max(...items.map((i) => i.total), 1);
-
-  if (!hydrated) {
-    return (
-      <div className="grid gap-4">
-        <div className="h-10 w-56 animate-pulse rounded-xl bg-slate-200" />
-        <div className="h-32 animate-pulse rounded-2xl bg-slate-200" />
-        <div className="h-72 animate-pulse rounded-2xl bg-slate-200" />
-      </div>
-    );
-  }
+  const maxDay = Math.max(1, ...series.map((point) => point.total));
+  const maxTotal = Math.max(1, summary.spent);
+  const heaviest = series.reduce(
+    (best, point) => (point.total > best.total ? point : best),
+    series[0],
+  );
 
   return (
-    <div className="grid gap-5">
+    <div className="space-y-5">
       <PageHeader
         title="Reports"
-        subtitle="Cost per item — see how much the same thing cost you this month"
+        subtitle={`${monthLabel(month)} · item-wise spending analysis`}
       >
         <MonthSwitcher />
       </PageHeader>
@@ -71,288 +66,294 @@ export function ReportsView() {
         <StatCard
           label="Total spent"
           value={formatMoney(summary.spent, currency)}
+          hint={`${summary.transactionCount} transactions`}
           accent="text-rose-600"
+          icon={<TrendingUp className="h-4 w-4" />}
         />
-        <StatCard label="Purchases" value={String(summary.transactionCount)} hint="transactions" />
-        <StatCard label="Unique items" value={String(summary.uniqueItems)} hint="different names" />
         <StatCard
-          label="Avg per purchase"
-          value={formatMoney(
-            summary.transactionCount ? summary.spent / summary.transactionCount : 0,
-            currency,
-          )}
-          hint={`Across ${summary.daysTotal} days`}
+          label="Unique items"
+          value={String(summary.uniqueItems)}
+          hint="Alag alag cheezein"
+          accent="text-indigo-600"
+          icon={<Target className="h-4 w-4" />}
+          delay={0.05}
+        />
+        <StatCard
+          label="Heaviest day"
+          value={
+            heaviest && heaviest.total > 0
+              ? formatMoney(heaviest.total, currency)
+              : formatMoney(0, currency)
+          }
+          hint={
+            heaviest && heaviest.total > 0
+              ? `${monthShort(month)} ${heaviest.day}`
+              : "No data yet"
+          }
+          accent="text-amber-600"
+          icon={<CalendarDays className="h-4 w-4" />}
+          delay={0.1}
+        />
+        <StatCard
+          label="Budgeted"
+          value={formatMoney(summary.budgeted, currency)}
+          hint={
+            summary.budgeted > 0
+              ? `${Math.round((summary.spent / summary.budgeted) * 100)}% used`
+              : "Plan set nahi"
+          }
+          accent="text-emerald-600"
+          icon={<BarChart3 className="h-4 w-4" />}
+          delay={0.15}
         />
       </div>
 
-      {/* category split */}
-      <Card>
-        <CardHeader
-          title="Category breakdown"
-          subtitle="Share of spending against the 60/25/15 limits"
-        />
-        <div className="flex h-3 w-full overflow-hidden rounded-full bg-slate-100">
-          {stats.map((s) => {
-            const share = percentOf(s.spent, summary.spent);
-            return share > 0 ? (
-              <div
-                key={s.info.id}
-                className={`${s.info.bar} h-full`}
-                style={{ width: `${share}%` }}
-                title={`${s.info.label}: ${share.toFixed(0)}%`}
-              />
-            ) : null;
-          })}
-        </div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          {stats.map((s) => (
-            <div key={s.info.id} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
-              <div className="flex items-center justify-between">
-                <span className={`text-xs font-bold ${s.info.text}`}>{s.info.label}</span>
-                <Chip className={s.info.chip}>{s.info.percent}%</Chip>
+      {/* daily chart */}
+      <FadeIn delay={0.1}>
+        <Card hover>
+          <CardHeader
+            icon={<BarChart3 className="h-4 w-4" />}
+            title="Daily spending"
+            subtitle={`Har din ka kharcha · peak ${formatMoney(maxDay, currency)}`}
+          />
+          {summary.spent === 0 ? (
+            <EmptyState
+              icon={<BarChart3 className="h-8 w-8" />}
+              title="Chart ke liye data chahiye"
+              description={`${monthLabel(month)} mein expense add karte hi yahan graph ban jayega.`}
+            />
+          ) : (
+            <div className="relative">
+              <div className="flex h-40 items-end gap-[3px] sm:gap-1.5">
+                {series.map((point, index) => {
+                  const height = (point.total / maxDay) * 100;
+                  const hasData = point.total > 0;
+                  return (
+                    <div
+                      key={point.date}
+                      className="group relative flex h-full flex-1 items-end"
+                      title={`${point.date}: ${formatMoney(point.total, currency)}`}
+                    >
+                      <motion.div
+                        initial={{ height: 0 }}
+                        animate={{ height: `${Math.max(hasData ? 4 : 1, height)}%` }}
+                        transition={{
+                          duration: 0.7,
+                          delay: Math.min(index * 0.012, 0.4),
+                          ease: EASE,
+                        }}
+                        className={clsx(
+                          "w-full rounded-t-md transition",
+                          hasData
+                            ? "bg-gradient-to-t from-indigo-500 to-indigo-400 group-hover:from-indigo-600 group-hover:to-indigo-500"
+                            : "bg-slate-100",
+                        )}
+                      />
+                      <span className="pointer-events-none absolute -top-6 left-1/2 hidden -translate-x-1/2 whitespace-nowrap rounded-md bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-white group-hover:block">
+                        {formatMoney(point.total, currency)}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
-              <p className="mt-1.5 text-sm font-bold text-slate-900">
-                {formatMoney(s.spent, currency)}
-              </p>
-              <p className="text-[11px] text-slate-500">
-                {Math.round(percentOf(s.spent, summary.spent))}% of spending ·{" "}
-                {formatMoney(s.remaining, currency)} left of {formatMoney(s.limit, currency)}
-              </p>
-              <div className="mt-2">
-                <ProgressBar
-                  percent={s.usedPercent}
-                  barClass={s.status === "over" ? "bg-rose-500" : s.info.bar}
-                />
+              <div className="mt-2 flex justify-between text-[10px] font-medium text-slate-400">
+                <span>1</span>
+                <span>{Math.ceil(daysInMonth(month) / 2)}</span>
+                <span>{daysInMonth(month)}</span>
               </div>
             </div>
-          ))}
-        </div>
-      </Card>
+          )}
+        </Card>
+      </FadeIn>
 
-      {/* daily chart */}
-      <Card>
-        <CardHeader
-          title="Daily spending"
-          subtitle="Every day of the month — bars show how much went out"
-          action={
-            <Chip className="bg-slate-50 text-slate-600 ring-slate-200">
-              Peak {formatMoney(maxDay, currency)}
-            </Chip>
-          }
-        />
-        <div className="no-scrollbar -mx-1 overflow-x-auto px-1 pb-1">
-          <div className="flex min-w-[540px] items-end gap-[3px] sm:min-w-0">
-            {series.map((point) => {
-              const height = point.total > 0 ? Math.max(4, (point.total / maxDay) * 100) : 2;
-              const isFuture = point.date > `${month}-31`;
-              return (
-                <div
-                  key={point.date}
-                  className="group flex flex-1 flex-col items-center gap-1"
-                  title={`${point.date}: ${formatMoney(point.total, currency)}`}
-                >
-                  <span className="text-[9px] font-semibold text-slate-400 opacity-0 transition group-hover:opacity-100">
-                    {point.total > 0 ? Math.round(point.total) : ""}
-                  </span>
-                  <div
-                    className={`w-full rounded-t-sm transition ${
-                      point.total > 0
-                        ? "bg-indigo-500 group-hover:bg-indigo-600"
-                        : isFuture
-                          ? "bg-slate-100"
-                          : "bg-slate-200"
-                    }`}
-                    style={{ height: `${height}%`, minHeight: 6 }}
+      {/* category split */}
+      <FadeIn delay={0.15}>
+        <Card hover>
+          <CardHeader
+            icon={<Target className="h-4 w-4" />}
+            title="Rule split"
+            subtitle="Har category ka hissa asal kharche mein"
+          />
+          <div className="mb-4 flex h-4 w-full overflow-hidden rounded-full bg-slate-100">
+            {stats
+              .filter((stat) => stat.spent > 0)
+              .map((stat, index) => (
+                <motion.div
+                  key={stat.info.key}
+                  initial={{ width: 0 }}
+                  animate={{
+                    width: `${(stat.spent / maxTotal) * 100}%`,
+                  }}
+                  transition={{ duration: 0.8, delay: 0.1 + index * 0.08, ease: EASE }}
+                  className={clsx("h-full", stat.info.bar)}
+                  title={`${stat.info.label}: ${formatMoney(stat.spent, currency)}`}
+                />
+              ))}
+          </div>
+          <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {stats.map((stat) => (
+              <div
+                key={stat.info.key}
+                className={clsx(
+                  "flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5",
+                  stat.info.card,
+                )}
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={clsx("h-2.5 w-2.5 shrink-0 rounded-full", stat.info.bar)}
                   />
-                  <span className="text-[8px] font-medium text-slate-400">
-                    {point.day % 5 === 0 || point.day === 1 ? point.day : ""}
+                  <span className="truncate text-xs font-semibold text-slate-700">
+                    {stat.info.label}
                   </span>
                 </div>
-              );
-            })}
+                <div className="text-right">
+                  <p className="text-xs font-bold text-slate-900">
+                    {formatMoney(stat.spent, currency)}
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    {stat.limit > 0
+                      ? `${Math.round(stat.usedPercent)}% of ${formatMoney(stat.limit, currency)}`
+                      : "no limit"}
+                  </p>
+                </div>
+              </div>
+            ))}
           </div>
-        </div>
-      </Card>
+        </Card>
+      </FadeIn>
 
-      {/* per item table */}
-      <Card className="p-0 overflow-hidden">
-        <div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-          <div>
-            <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <PackageSearch className="h-4 w-4 text-indigo-500" /> Cost per item
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Same item merged together — total, purchase count and average
-            </p>
-          </div>
-          <div className="relative w-full sm:w-64">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <input
-              className={`${inputClass} pl-9`}
-              placeholder="Search item…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2 border-b border-slate-100 px-4 py-3 sm:px-5">
-          <button
-            type="button"
-            onClick={() => setFilter("all")}
-            className={filter === "all" ? undefined : `${btnSecondary} !py-1.5 !text-xs`}
-            style={
-              filter === "all"
-                ? { backgroundColor: "#4f46e5", color: "#fff", borderColor: "#4f46e5" }
-                : undefined
+      {/* item table */}
+      <FadeIn delay={0.2}>
+        <Card>
+          <CardHeader
+            icon={<Search className="h-4 w-4" />}
+            title="Item-wise cost"
+            subtitle="Ek hi cheez kitni baar kharidi aur kitni baar kharch hui"
+            action={
+              <div className="relative hidden sm:block">
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search item…"
+                  className="w-40 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                />
+              </div>
             }
-          >
-            All
-          </button>
-          {CATEGORIES.map((c) => {
-            const active = filter === c.id;
-            return (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => setFilter(c.id)}
-                className={`${btnSecondary} !py-1.5 !text-xs ${active ? "!border-transparent" : ""}`}
-                style={
-                  active
-                    ? { backgroundColor: "#4f46e5", color: "#fff" }
-                    : undefined
-                }
-              >
-                {c.short} ({c.percent}%)
-              </button>
-            );
-          })}
-          {query || filter !== "all" ? (
-            <button
-              type="button"
-              className={`${btnSecondary} !py-1.5 !text-xs`}
-              onClick={() => {
-                setQuery("");
-                setFilter("all");
-              }}
-            >
-              Reset
-            </button>
-          ) : null}
-        </div>
+          />
 
-        {items.length === 0 ? (
-          <div className="p-5">
-            <EmptyState
-              icon={<BarChart3 className="h-10 w-10" />}
-              title={allItems.length === 0 ? "Nothing to report yet" : "No items match"}
-              description={
-                allItems.length === 0
-                  ? "Once you log expenses in the Daily Log, this report will show exactly how much each item cost you."
-                  : "Try a different search term or reset the filters."
-              }
+          <div className="mb-3 sm:hidden">
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search item…"
+              className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
             />
           </div>
-        ) : (
-          <>
-            {/* header row (desktop) */}
-            <div className="hidden grid-cols-12 gap-3 border-b border-slate-100 bg-slate-50 px-5 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 md:grid">
-              <span className="col-span-4">Item</span>
-              <span className="col-span-2 text-right">Purchases</span>
-              <span className="col-span-2 text-right">Avg cost</span>
-              <span className="col-span-2 text-right">Total spent</span>
-              <span className="col-span-2">vs budget</span>
-            </div>
-            <ul className="divide-y divide-slate-100">
-              {items.map((item) => {
-                const info = CATEGORY_MAP[item.category];
-                const budgetUse =
-                  item.budget && item.budget > 0 ? percentOf(item.total, item.budget) : null;
-                return (
-                  <li
-                    key={item.key}
-                    className="grid grid-cols-2 gap-x-3 gap-y-2 px-4 py-3 md:grid-cols-12 md:items-center md:px-5"
-                  >
-                    <div className="col-span-2 min-w-0 md:col-span-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="truncate text-sm font-semibold text-slate-800">{item.name}</p>
-                        <Chip className={info.chip}>{info.short}</Chip>
-                      </div>
-                      <div className="mt-1 h-1.5 w-full max-w-[10rem] overflow-hidden rounded-full bg-slate-100 md:hidden">
-                        <div
-                          className={`h-full rounded-full ${info.bar}`}
-                          style={{ width: `${Math.max(4, (item.total / maxItem) * 100)}%` }}
-                        />
-                      </div>
-                    </div>
 
-                    <div className="text-right md:col-span-2">
-                      <span className="text-[10px] uppercase tracking-wide text-slate-400 md:hidden">
-                        Purchases{" "}
-                      </span>
-                      <span className="text-sm font-medium text-slate-700">
-                        {item.count}×
-                      </span>
-                    </div>
-
-                    <div className="text-right md:col-span-2">
-                      <span className="text-[10px] uppercase tracking-wide text-slate-400 md:hidden">
-                        Avg{" "}
-                      </span>
-                      <span className="text-sm text-slate-600">
-                        {formatMoney(item.average, currency)}
-                      </span>
-                    </div>
-
-                    <div className="text-right md:col-span-2">
-                      <span className="text-[10px] uppercase tracking-wide text-slate-400 md:hidden">
-                        Total{" "}
-                      </span>
-                      <span className="text-sm font-bold text-slate-900">
-                        {formatMoney(item.total, currency)}
-                      </span>
-                    </div>
-
-                    <div className="col-span-2 md:col-span-2">
-                      {item.budget ? (
-                        <>
-                          <div className="flex items-center justify-between text-[10px] text-slate-500">
-                            <span>
-                              {formatMoney(item.total, currency)} /{" "}
-                              {formatMoney(item.budget, currency)}
-                            </span>
-                            <span className="font-semibold">{Math.round(budgetUse ?? 0)}%</span>
-                          </div>
-                          <div className="mt-1">
-                            <ProgressBar
-                              percent={budgetUse ?? 0}
-                              barClass={
-                                (budgetUse ?? 0) > 100 ? "bg-rose-500" : info.bar
-                              }
+          {filteredItems.length === 0 ? (
+            <EmptyState
+              icon={<Search className="h-8 w-8" />}
+              title="No items yet"
+              description="Jaise hi expenses aayenge, yahan har item ka total, count aur average dikhega."
+            />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[34rem] text-left">
+                <thead>
+                  <tr className="border-b border-slate-100 text-[11px] uppercase tracking-wide text-slate-400">
+                    <th className="pb-2 pr-3 font-semibold">Item</th>
+                    <th className="pb-2 pr-3 font-semibold">Times</th>
+                    <th className="pb-2 pr-3 font-semibold">Average</th>
+                    <th className="pb-2 pr-3 font-semibold">Total</th>
+                    <th className="pb-2 font-semibold">Budget</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredItems.map((item, index) => {
+                    const info = stats.find(
+                      (stat) => stat.info.key === item.categoryKey,
+                    );
+                    return (
+                      <motion.tr
+                        key={item.key}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{
+                          duration: 0.35,
+                          delay: Math.min(index * 0.04, 0.3),
+                          ease: EASE,
+                        }}
+                        className="border-b border-slate-50 transition last:border-b-0 hover:bg-slate-50/70"
+                      >
+                        <td className="py-2.5 pr-3">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={clsx(
+                                "h-2 w-2 shrink-0 rounded-full",
+                                info?.info.bar ?? "bg-slate-300",
+                              )}
                             />
+                            <div>
+                              <p className="text-sm font-semibold text-slate-800">
+                                {item.name}
+                                {item.completed ? (
+                                  <Chip className="ml-2 bg-emerald-50 text-emerald-600 ring-emerald-200">
+                                    completed
+                                  </Chip>
+                                ) : null}
+                              </p>
+                              <p className="text-[11px] text-slate-400">
+                                {info?.info.label ?? item.categoryKey}
+                                {item.firstDate
+                                  ? ` · ${item.firstDate} → ${item.lastDate}`
+                                  : ""}
+                              </p>
+                            </div>
                           </div>
-                        </>
-                      ) : (
-                        <span className="text-[11px] italic text-slate-400">
-                          no budget set
-                        </span>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 bg-slate-50 px-5 py-3 text-xs">
-              <span className="text-slate-500">
-                {items.length} item{items.length === 1 ? "" : "s"} shown
-              </span>
-              <span className="font-semibold text-slate-800">
-                Sum: {formatMoney(items.reduce((sum, i) => sum + i.total, 0), currency)}
-              </span>
+                        </td>
+                        <td className="py-2.5 pr-3 text-sm text-slate-600">
+                          {item.count > 0 ? `${item.count}×` : "—"}
+                        </td>
+                        <td className="py-2.5 pr-3 text-sm text-slate-600">
+                          {item.count > 0 ? formatMoney(item.average, currency) : "—"}
+                        </td>
+                        <td className="py-2.5 pr-3 text-sm font-bold text-slate-900">
+                          {formatMoney(item.total, currency)}
+                        </td>
+                        <td className="py-2.5">
+                          {item.budget !== null ? (
+                            <div className="w-28">
+                              <ProgressBar
+                                percent={
+                                  item.budget > 0
+                                    ? (item.total / item.budget) * 100
+                                    : 0
+                                }
+                                barClass={
+                                  item.total > item.budget
+                                    ? "bg-rose-500"
+                                    : "bg-emerald-500"
+                                }
+                                trackClass="bg-slate-100"
+                              />
+                              <p className="mt-1 text-[10px] text-slate-400">
+                                {formatMoney(item.budget, currency)} planned
+                              </p>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-400">—</span>
+                          )}
+                        </td>
+                      </motion.tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-          </>
-        )}
-      </Card>
+          )}
+        </Card>
+      </FadeIn>
     </div>
   );
 }

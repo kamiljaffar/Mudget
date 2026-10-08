@@ -1,493 +1,880 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import clsx from "clsx";
+import { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
-  AlertTriangle,
   Check,
+  CirclePlus,
+  Database,
   Download,
+  Layers,
   Pencil,
+  Percent,
   Plus,
   RotateCcw,
+  Sparkles,
+  Target,
   Trash2,
   Upload,
+  Wallet,
 } from "@/components/icons";
+import { CategorySelect, ColorDot } from "@/components/fields";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
 import {
   Card,
   CardHeader,
   Chip,
+  EASE,
   EmptyState,
+  FadeIn,
+  Modal,
   PageHeader,
-  ProgressBar,
-  btnDanger,
+  Stagger,
+  StaggerItem,
   btnPrimary,
   btnSecondary,
+  btnGhost,
   inputClass,
   labelClass,
-  selectClass,
 } from "@/components/ui";
-import { CATEGORIES } from "@/lib/categories";
-import { categoryStats, getPlan } from "@/lib/calc";
-import { formatMoney, monthLabel } from "@/lib/format";
-import { useApp } from "@/lib/store";
-import type { AppState, CategoryId } from "@/lib/types";
+import { activeCategories } from "@/lib/calc";
+import { formatMoney, monthLabel, todayISO } from "@/lib/format";
+import { downloadBackup, pickBackup } from "@/lib/backup";
+import { useMonth, useToast } from "@/lib/providers";
+import { useAction } from "@/lib/useAction";
+import {
+  addBudgetItem,
+  createRule,
+  deleteBudgetItem,
+  deleteRule,
+  importBackup,
+  resetAllData,
+  setIncome,
+  setActiveRule,
+  toggleItemComplete,
+  updateBudgetItem,
+  updateRule,
+} from "@/lib/actions";
+import { COLOR_TOKENS, colorStyle } from "@/lib/palette";
+import type { Workspace } from "@/lib/types";
 
-export function BudgetView() {
-  const {
-    state,
-    hydrated,
-    setIncome,
-    setCurrency,
-    addBudgetItem,
-    updateBudgetItem,
-    removeBudgetItem,
-    replaceState,
-    resetAll,
-  } = useApp();
+/* --------------------------------------------------------------- state */
 
-  const month = state.selectedMonth;
-  const currency = state.currency;
-  const plan = getPlan(state, month);
-  const stats = categoryStats(state, month);
+interface RuleForm {
+  id?: string;
+  name: string;
+  categories: { label: string; percent: string; color: string }[];
+}
 
-  const [incomeInput, setIncomeInput] = useState("");
-  const [name, setName] = useState("");
-  const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState<CategoryId>("basic");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editAmount, setEditAmount] = useState("");
-  const [editCategory, setEditCategory] = useState<CategoryId>("basic");
-  const [message, setMessage] = useState<string | null>(null);
+interface ItemForm {
+  id?: string;
+  name: string;
+  amount: string;
+  categoryKey: string;
+}
 
+const blankRule = (): RuleForm => ({
+  name: "",
+  categories: [
+    { label: "Basic", percent: "60", color: "sky" },
+    { label: "Wants", percent: "25", color: "amber" },
+    { label: "Loans / Investments", percent: "15", color: "violet" },
+  ],
+});
+
+export function BudgetView({ workspace }: { workspace: Workspace }) {
+  const { month } = useMonth();
+  const { notify } = useToast();
+  const currency = workspace.profile.currency;
+  const categories = activeCategories(workspace, month);
+
+  const income =
+    workspace.plans.find((plan) => plan.month === month)?.income ?? 0;
+  const [incomeDraft, setIncomeDraft] = useState<string>(String(income || ""));
+  const items = workspace.items.filter((item) => item.month === month);
+
+  // keep the income field in sync when the month (or saved value) changes
   useEffect(() => {
-    setIncomeInput(plan.income ? String(plan.income) : "");
-    setEditingId(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [month, hydrated]);
+    setIncomeDraft(String(income || ""));
+  }, [month, income]);
 
-  useEffect(() => {
-    if (!message) return;
-    const timer = setTimeout(() => setMessage(null), 3500);
-    return () => clearTimeout(timer);
-  }, [message]);
+  /* actions */
+  const changeIncome = useAction(setIncome);
+  const additem = useAction(addBudgetItem);
+  const editItem = useAction(updateBudgetItem);
+  const removeItem = useAction(deleteBudgetItem);
+  const toggleItem = useAction(toggleItemComplete);
+  const applyRule = useAction(setActiveRule);
+  const saveRule = useAction(createRule);
+  const saveExistingRule = useAction(updateRule);
+  const removeRule = useAction(deleteRule);
+  const restore = useAction(importBackup);
+  const reset = useAction(resetAllData);
 
-  const grouped = useMemo(
-    () =>
-      CATEGORIES.map((info) => ({
-        info,
-        items: plan.items.filter((i) => i.category === info.id),
-        stat: stats.find((s) => s.info.id === info.id)!,
-      })),
-    [plan.items, stats],
+  /* modal state */
+  const [ruleModal, setRuleModal] = useState(false);
+  const [ruleForm, setRuleForm] = useState<RuleForm>(blankRule);
+  const [itemModal, setItemModal] = useState(false);
+  const [itemForm, setItemForm] = useState<ItemForm | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+
+  const ruleTotal = ruleForm.categories.reduce(
+    (sum, row) => sum + (Number(row.percent) || 0),
+    0,
   );
 
-  function handleAdd(event: React.FormEvent) {
-    event.preventDefault();
-    const trimmed = name.trim();
-    const value = Number(amount);
-    if (!trimmed) return;
-    if (!Number.isFinite(value) || value <= 0) return;
-    addBudgetItem(month, { name: trimmed, amount: value, category });
-    setName("");
-    setAmount("");
-  }
-
-  function startEdit(id: string) {
-    const item = plan.items.find((i) => i.id === id);
-    if (!item) return;
-    setEditingId(id);
-    setEditName(item.name);
-    setEditAmount(String(item.amount));
-    setEditCategory(item.category);
-  }
-
-  function saveEdit() {
-    if (!editingId) return;
-    const value = Number(editAmount);
-    if (!editName.trim() || !Number.isFinite(value) || value <= 0) return;
-    updateBudgetItem(month, editingId, {
-      name: editName.trim(),
-      amount: value,
-      category: editCategory,
-    });
-    setEditingId(null);
-  }
-
-  function handleExport() {
-    try {
-      const blob = new Blob([JSON.stringify(state, null, 2)], {
-        type: "application/json",
-      });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `mudget-backup-${new Date().toISOString().slice(0, 10)}.json`;
-      link.click();
-      URL.revokeObjectURL(url);
-      setMessage("Backup downloaded.");
-    } catch {
-      setMessage("Could not create the backup file.");
+  async function submitIncome() {
+    const value = Number(incomeDraft);
+    if (!Number.isFinite(value) || value < 0) {
+      notify("Sahi income dalein.", "error");
+      return;
     }
+    await changeIncome.run({ month, income: value });
   }
 
-  function handleImport(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const parsed = JSON.parse(String(reader.result)) as AppState;
-        if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.expenses)) {
-          throw new Error("invalid");
-        }
-        replaceState(parsed);
-        setMessage("Backup restored.");
-      } catch {
-        setMessage("That file is not a valid Mudget backup.");
-      }
+  async function submitRule() {
+    const payload = {
+      name: ruleForm.name,
+      categories: ruleForm.categories.map((row) => ({
+        label: row.label,
+        percent: Number(row.percent) || 0,
+        color: row.color,
+      })),
     };
-    reader.readAsText(file);
-    event.target.value = "";
+    const result = ruleForm.id
+      ? await saveExistingRule.run({ id: ruleForm.id, ...payload })
+      : await saveRule.run(payload);
+    if (result?.ok) setRuleModal(false);
   }
 
-  function handleReset() {
-    if (window.confirm("Delete ALL data (income, budgets and every expense)? This cannot be undone.")) {
-      resetAll();
-      setMessage("All data cleared.");
+  function editRuleForm(ruleId: string) {
+    const rule = workspace.rules.find((r) => r.id === ruleId);
+    if (!rule) return;
+    setRuleForm({
+      id: rule.id,
+      name: rule.name,
+      categories: rule.categories.map((c) => ({
+        label: c.label,
+        percent: String(c.percent),
+        color: c.color,
+      })),
+    });
+    setRuleModal(true);
+  }
+
+  function openNewItem() {
+    setItemForm({
+      name: "",
+      amount: "",
+      categoryKey: categories[0]?.key ?? "basic",
+    });
+    setItemModal(true);
+  }
+
+  function openEditItem(itemId: string) {
+    const item = items.find((i) => i.id === itemId);
+    if (!item) return;
+    setItemForm({
+      id: item.id,
+      name: item.name,
+      amount: String(item.amount),
+      categoryKey: item.categoryKey,
+    });
+    setItemModal(true);
+  }
+
+  async function submitItem() {
+    if (!itemForm) return;
+    const amount = Number(itemForm.amount);
+    if (!itemForm.name.trim()) {
+      notify("Item ka naam likhein.", "error");
+      return;
     }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      notify("Amount 0 se zyada hona chahiye.", "error");
+      return;
+    }
+    const payload = {
+      name: itemForm.name,
+      amount,
+      categoryKey: itemForm.categoryKey,
+    };
+    const result = itemForm.id
+      ? await editItem.run({ id: itemForm.id, ...payload })
+      : await additem.run({ month, ...payload });
+    if (result?.ok) setItemModal(false);
   }
 
-  if (!hydrated) {
-    return (
-      <div className="grid gap-4">
-        <div className="h-10 w-56 animate-pulse rounded-xl bg-slate-200" />
-        <div className="h-40 animate-pulse rounded-2xl bg-slate-200" />
-        <div className="h-64 animate-pulse rounded-2xl bg-slate-200" />
-      </div>
-    );
-  }
-
-  const plannedTotal = plan.items.reduce((sum, i) => sum + i.amount, 0);
-  const unallocated = plan.income - plannedTotal;
+  const plannedTotal = items.reduce((sum, item) => sum + item.amount, 0);
+  const completedCount = items.filter((item) => item.expenseId).length;
 
   return (
-    <div className="grid gap-5">
+    <div className="space-y-5">
       <PageHeader
         title="Monthly Budget"
-        subtitle={`${monthLabel(month)} · predefined budget items and the 60/25/15 rule`}
+        subtitle={`${monthLabel(month)} · plan, rules aur backup`}
       >
         <MonthSwitcher />
       </PageHeader>
 
-      {message ? (
-        <div className="flex items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800">
-          <Check className="h-4 w-4" /> {message}
-        </div>
-      ) : null}
-
-      {/* income + rule */}
-      <div className="grid gap-3 lg:grid-cols-3">
-        <Card className="lg:col-span-1">
-          <CardHeader title="Monthly income" subtitle={`Currency: ${currency}`} />
-          <label className={labelClass} htmlFor="income">
-            Income for {monthLabel(month)}
-          </label>
-          <div className="flex items-stretch gap-2">
-            <div className="flex items-center rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-500">
-              {currency}
-            </div>
-            <input
-              id="income"
-              type="number"
-              min={0}
-              inputMode="numeric"
-              className={inputClass}
-              value={incomeInput}
-              placeholder="e.g. 100000"
-              onChange={(e) => {
-                setIncomeInput(e.target.value);
-                setIncome(month, e.target.value === "" ? 0 : Number(e.target.value));
-              }}
-            />
-          </div>
-
-          <div className="mt-4 flex items-center gap-2">
+      {/* income */}
+      <FadeIn>
+        <section className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div className="flex-1">
-              <label className={labelClass} htmlFor="currency">
-                Currency symbol
-              </label>
-              <input
-                id="currency"
-                className={inputClass}
-                value={currency}
-                maxLength={6}
-                onChange={(e) => setCurrency(e.target.value)}
-              />
+              <span className={labelClass}>Monthly income ({monthLabel(month)})</span>
+              <div className="flex gap-2">
+                <div className="relative flex-1 sm:max-w-xs">
+                  <Wallet className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    inputMode="numeric"
+                    className={clsx(inputClass, "pl-10 text-base font-semibold")}
+                    value={incomeDraft}
+                    onChange={(event) => setIncomeDraft(event.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={submitIncome}
+                  disabled={changeIncome.busy}
+                  className={btnPrimary}
+                >
+                  {changeIncome.busy ? "Saving…" : "Save"}
+                </button>
+              </div>
+              <p className="mt-1.5 text-xs text-slate-500">
+                Rule limits income ke hisaab se calculate hote hain.
+              </p>
+            </div>
+
+            <div className="flex gap-6">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Planned
+                </p>
+                <p className="text-lg font-bold text-slate-900">
+                  {formatMoney(plannedTotal, currency)}
+                </p>
+              </div>
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Completed
+                </p>
+                <p className="text-lg font-bold text-emerald-600">
+                  {completedCount}
+                  <span className="text-sm font-medium text-slate-400">
+                    /{items.length}
+                  </span>
+                </p>
+              </div>
             </div>
           </div>
+        </section>
+      </FadeIn>
 
-          <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
-            Everything is saved automatically in this browser (localStorage). Use the backup
-            buttons below before clearing browser data.
-          </p>
-        </Card>
-
-        <Card className="lg:col-span-2">
+      {/* ---------------------------------------------------------- rules */}
+      <FadeIn delay={0.05}>
+        <Card>
           <CardHeader
-            title="Rule limits (60 / 25 / 15)"
-            subtitle="Maximum allowed per category this month"
+            icon={<Layers className="h-4 w-4" />}
+            title="Budget rules"
+            subtitle="Ek rule select karo — wohi puri app pe apply hota hai. Naya rule bana sakte ho."
             action={
-              <Chip className="bg-slate-50 text-slate-600 ring-slate-200">
-                Planned {formatMoney(plannedTotal, currency)}
-              </Chip>
+              <button
+                type="button"
+                className={btnSecondary}
+                onClick={() => {
+                  setRuleForm(blankRule());
+                  setRuleModal(true);
+                }}
+              >
+                <Plus className="h-4 w-4" />
+                New rule
+              </button>
             }
           />
-          <div className="grid gap-3">
-            {stats.map((s) => {
-              const overBudget = s.budgeted > s.limit && s.limit > 0;
-              return (
-                <div key={s.info.id} className="rounded-xl border border-slate-100 bg-slate-50/60 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-sm font-bold ${s.info.text}`}>
-                        {s.info.percent}% {s.info.label}
-                      </span>
-                      <Chip className={s.info.chip}>max {formatMoney(s.limit, currency)}</Chip>
-                    </div>
-                    <span className="text-sm font-semibold text-slate-700">
-                      Planned {formatMoney(s.budgeted, currency)}
-                    </span>
-                  </div>
-                  <div className="mt-2">
-                    <ProgressBar
-                      percent={s.budgetedPercent}
-                      barClass={overBudget ? "bg-rose-500" : s.info.bar}
-                    />
-                  </div>
-                  <div className="mt-1.5 flex items-center justify-between text-[11px]">
-                    <span className="text-slate-500">{s.info.hint}</span>
-                    {overBudget ? (
-                      <span className="flex items-center gap-1 font-semibold text-rose-600">
-                        <AlertTriangle className="h-3.5 w-3.5" />
-                        Over by {formatMoney(s.budgeted - s.limit, currency)}
-                      </span>
-                    ) : (
-                      <span className="font-semibold text-emerald-600">
-                        {formatMoney(s.limit - s.budgeted, currency)} unplanned
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
 
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-indigo-50 px-3 py-2.5 text-xs text-indigo-800">
-            <span>
-              Total planned: <b>{formatMoney(plannedTotal, currency)}</b> of{" "}
-              {formatMoney(plan.income, currency)}
-            </span>
-            <span className="font-semibold">
-              {unallocated >= 0
-                ? `${formatMoney(unallocated, currency)} not assigned yet`
-                : `Over-planned by ${formatMoney(Math.abs(unallocated), currency)}`}
-            </span>
+          <Stagger className="grid gap-3 md:grid-cols-2" gap={0.07}>
+            {workspace.rules.map((rule) => (
+              <StaggerItem key={rule.id}>
+                <motion.div
+                  layout
+                  className={clsx(
+                    "relative rounded-2xl border p-4 transition",
+                    rule.isActive
+                      ? "border-indigo-300 bg-gradient-to-br from-indigo-50 to-white shadow-md shadow-indigo-500/10"
+                      : "border-slate-200 bg-white hover:border-slate-300",
+                  )}
+                >
+                  {rule.isActive ? (
+                    <motion.span
+                      layoutId="active-rule-glow"
+                      className="pointer-events-none absolute inset-0 rounded-2xl ring-2 ring-indigo-400/60"
+                      transition={{ type: "spring", stiffness: 380, damping: 32 }}
+                    />
+                  ) : null}
+
+                  <div className="relative flex items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-bold text-slate-900">{rule.name}</h3>
+                        {rule.isActive ? (
+                          <Chip className="bg-indigo-600 text-white ring-indigo-600">
+                            active
+                          </Chip>
+                        ) : null}
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-slate-400">
+                        {rule.categories.map((c) => `${c.percent}%`).join(" · ")}
+                      </p>
+                    </div>
+
+                    <div className="flex shrink-0 gap-1">
+                      <IconAction label="Edit rule" onClick={() => editRuleForm(rule.id)}>
+                        <Pencil className="h-3.5 w-3.5" />
+                      </IconAction>
+                      <IconAction
+                        label="Delete rule"
+                        danger
+                        armed={pendingDelete === rule.id}
+                        disabled={rule.isActive}
+                        onClick={() => {
+                          if (pendingDelete === rule.id) {
+                            setPendingDelete(null);
+                            void removeRule.run({ id: rule.id });
+                          } else {
+                            setPendingDelete(rule.id);
+                            window.setTimeout(() => setPendingDelete(null), 3000);
+                          }
+                        }}
+                      >
+                        {pendingDelete === rule.id ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
+                      </IconAction>
+                    </div>
+                  </div>
+
+                  <div className="relative mt-3 flex flex-wrap gap-1.5">
+                    {rule.categories.map((category) => (
+                      <span
+                        key={category.key}
+                        className={clsx(
+                          "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset",
+                          colorStyle(category.color).chip,
+                        )}
+                      >
+                        <span
+                          className={clsx(
+                            "h-1.5 w-1.5 rounded-full",
+                            colorStyle(category.color).bar,
+                          )}
+                        />
+                        {category.label} · {category.percent}%
+                      </span>
+                    ))}
+                  </div>
+
+                  {!rule.isActive ? (
+                    <button
+                      type="button"
+                      onClick={() => applyRule.run({ id: rule.id })}
+                      disabled={applyRule.busy}
+                      className="relative mt-3.5 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-100 active:scale-[0.98] disabled:opacity-60"
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      Apply this rule
+                    </button>
+                  ) : null}
+                </motion.div>
+              </StaggerItem>
+            ))}
+          </Stagger>
+        </Card>
+      </FadeIn>
+
+      {/* ---------------------------------------------------------- items */}
+      <FadeIn delay={0.1}>
+        <Card>
+          <CardHeader
+            icon={<Target className="h-4 w-4" />}
+            title="Planned items"
+            subtitle="Tick dabate hi usi din ki expense khud ban jati hai."
+            action={
+              <button type="button" onClick={openNewItem} className={btnPrimary}>
+                <CirclePlus className="h-4 w-4" />
+                Add item
+              </button>
+            }
+          />
+
+          {items.length === 0 ? (
+            <EmptyState
+              icon={<Target className="h-8 w-8" />}
+              title="Is month koi plan nahi"
+              description="Items add karein (rent, groceries, fees…) — poori ho jayein to tick dabayein aur expense khud add ho jayegi."
+              action={
+                <button type="button" onClick={openNewItem} className={btnPrimary}>
+                  <CirclePlus className="h-4 w-4" /> Add first item
+                </button>
+              }
+            />
+          ) : (
+            <Stagger className="space-y-2.5" gap={0.05}>
+              {items.map((item) => {
+                const info = categories.find((c) => c.key === item.categoryKey);
+                const done = Boolean(item.expenseId);
+                return (
+                  <StaggerItem key={item.id}>
+                    <motion.div
+                      layout
+                      className={clsx(
+                        "group flex items-center gap-3 rounded-2xl border px-3 py-3 transition",
+                        done
+                          ? "border-emerald-200 bg-emerald-50/60"
+                          : "border-slate-200 bg-white hover:border-slate-300",
+                      )}
+                    >
+                      <button
+                        type="button"
+                        aria-label={done ? "Mark as pending" : "Mark as completed"}
+                        disabled={toggleItem.busy}
+                        onClick={() =>
+                          toggleItem.run({ itemId: item.id, date: todayISO() })
+                        }
+                        className={clsx(
+                          "relative grid h-8 w-8 shrink-0 place-items-center rounded-full border-2 transition active:scale-90 disabled:opacity-60",
+                          done
+                            ? "border-emerald-500 bg-emerald-500 text-white shadow-md shadow-emerald-500/30"
+                            : "border-slate-300 bg-white text-transparent hover:border-indigo-400 hover:text-slate-300",
+                        )}
+                      >
+                        <AnimatePresence initial={false}>
+                          {done ? (
+                            <motion.span
+                              initial={{ scale: 0, rotate: -30 }}
+                              animate={{ scale: 1, rotate: 0 }}
+                              exit={{ scale: 0 }}
+                              transition={{ type: "spring", stiffness: 500, damping: 20 }}
+                            >
+                              <Check className="h-4 w-4" strokeWidth={3} />
+                            </motion.span>
+                          ) : null}
+                        </AnimatePresence>
+                      </button>
+
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className={clsx(
+                            "truncate text-sm font-semibold",
+                            done ? "text-slate-500 line-through" : "text-slate-800",
+                          )}
+                        >
+                          {item.name}
+                        </p>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                          <span
+                            className={clsx(
+                              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset",
+                              info?.chip ?? "bg-slate-50 text-slate-600 ring-slate-200",
+                            )}
+                          >
+                            {info?.label ?? item.categoryKey}
+                          </span>
+                          {done ? (
+                            <span className="text-[10px] font-semibold text-emerald-600">
+                              expense added · {todayISO()}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-400">pending</span>
+                          )}
+                        </div>
+                      </div>
+
+                      <span className="shrink-0 text-sm font-bold text-slate-900">
+                        {formatMoney(item.amount, currency)}
+                      </span>
+
+                      <div className="flex shrink-0 gap-0.5">
+                        <IconAction label="Edit item" onClick={() => openEditItem(item.id)}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </IconAction>
+                        <IconAction
+                          label="Delete item"
+                          danger
+                          armed={pendingDelete === item.id}
+                          onClick={() => {
+                            if (pendingDelete === item.id) {
+                              setPendingDelete(null);
+                              void removeItem.run({ id: item.id });
+                            } else {
+                              setPendingDelete(item.id);
+                              window.setTimeout(() => setPendingDelete(null), 3000);
+                            }
+                          }}
+                        >
+                          {pendingDelete === item.id ? (
+                            <Check className="h-3.5 w-3.5" />
+                          ) : (
+                            <Trash2 className="h-3.5 w-3.5" />
+                          )}
+                        </IconAction>
+                      </div>
+                    </motion.div>
+                  </StaggerItem>
+                );
+              })}
+            </Stagger>
+          )}
+
+          {items.length > 0 ? (
+            <div className="mt-4 flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Total planned
+              </p>
+              <p className="text-sm font-bold text-slate-900">
+                {formatMoney(plannedTotal, currency)}
+                {income > 0 ? (
+                  <span className="ml-2 text-xs font-medium text-slate-400">
+                    {Math.round((plannedTotal / income) * 100)}% of income
+                  </span>
+                ) : null}
+              </p>
+            </div>
+          ) : null}
+        </Card>
+      </FadeIn>
+
+      {/* --------------------------------------------------------- backup */}
+      <FadeIn delay={0.15}>
+        <Card>
+          <CardHeader
+            icon={<Database className="h-4 w-4" />}
+            title="Data backup"
+            subtitle="Sab kuch Neon database pe sync hota hai — phir bhi JSON backup le sakte hain."
+          />
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className={btnSecondary}
+              onClick={() => {
+                downloadBackup(workspace, month);
+                notify("Backup download ho gaya", "success");
+              }}
+            >
+              <Download className="h-4 w-4" />
+              Export JSON
+            </button>
+            <button
+              type="button"
+              className={btnSecondary}
+              onClick={() =>
+                pickBackup((payload) => {
+                  if (!payload) {
+                    notify("File read nahi ho saki.", "error");
+                    return;
+                  }
+                  void restore.run(payload);
+                })
+              }
+            >
+              <Upload className="h-4 w-4" />
+              Import JSON
+            </button>
+            <button
+              type="button"
+              className={btnGhost}
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Saara data (rules, plans, expenses) delete kar ke default rules wapas la dein?",
+                  )
+                ) {
+                  void reset.run();
+                }
+              }}
+            >
+              <RotateCcw className="h-4 w-4" />
+              Reset data
+            </button>
           </div>
         </Card>
-      </div>
+      </FadeIn>
 
-      {/* add budget item */}
-      <Card>
-        <CardHeader title="Add budget item" subtitle="Predefined spending you plan every month" />
-        <form onSubmit={handleAdd} className="grid gap-3 sm:grid-cols-[1.4fr_1fr_0.8fr_auto] sm:items-end">
-          <div>
-            <label className={labelClass} htmlFor="item-name">
-              Item name
-            </label>
-            <input
-              id="item-name"
-              className={inputClass}
-              placeholder="e.g. Rent, Groceries, Car installment"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className={labelClass} htmlFor="item-category">
-              Category
-            </label>
-            <select
-              id="item-category"
-              className={selectClass}
-              value={category}
-              onChange={(e) => setCategory(e.target.value as CategoryId)}
+      {/* ------------------------------------------------------ rule modal */}
+      <Modal
+        open={ruleModal}
+        onClose={() => setRuleModal(false)}
+        title={ruleForm.id ? "Edit rule" : "New budget rule"}
+        subtitle="Percent ka total 100% hona chahiye."
+        footer={
+          <>
+            <button
+              type="button"
+              className={btnSecondary}
+              onClick={() => setRuleModal(false)}
             >
-              {CATEGORIES.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.percent}% · {c.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className={labelClass} htmlFor="item-amount">
-              Amount
-            </label>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className={btnPrimary}
+              disabled={saveRule.busy || saveExistingRule.busy}
+              onClick={submitRule}
+            >
+              <Percent className="h-4 w-4" />
+              {saveRule.busy || saveExistingRule.busy ? "Saving…" : "Save rule"}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <label className="block">
+            <span className={labelClass}>Rule name</span>
             <input
-              id="item-amount"
-              type="number"
-              min={0}
-              inputMode="numeric"
               className={inputClass}
-              placeholder="0"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-          </div>
-          <button type="submit" className={btnPrimary}>
-            <Plus className="h-4 w-4" /> Add
-          </button>
-        </form>
-      </Card>
-
-      {/* items grouped by category */}
-      {plan.items.length === 0 ? (
-        <EmptyState
-          title="No budget items yet"
-          description="Add your predefined monthly items above (rent, groceries, loan instalments…). Daily expenses with the same name will be matched automatically."
-        />
-      ) : (
-        <div className="grid gap-3 md:grid-cols-3">
-          {grouped.map(({ info, items, stat }) => (
-            <Card key={info.id} className={info.card}>
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-bold text-slate-900">{info.label}</p>
-                  <p className="text-[11px] text-slate-500">
-                    {formatMoney(stat.budgeted, currency)} of {formatMoney(stat.limit, currency)}
-                  </p>
-                </div>
-                <Chip className={info.chip}>{info.percent}%</Chip>
-              </div>
-
-              <ul className="mt-3 divide-y divide-slate-100">
-                {items.map((item) =>
-                  editingId === item.id ? (
-                    <li key={item.id} className="grid gap-2 py-3">
-                      <input
-                        className={inputClass}
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
-                        placeholder="Item name"
-                      />
-                      <div className="grid grid-cols-2 gap-2">
-                        <input
-                          className={inputClass}
-                          type="number"
-                          min={0}
-                          value={editAmount}
-                          onChange={(e) => setEditAmount(e.target.value)}
-                        />
-                        <select
-                          className={selectClass}
-                          value={editCategory}
-                          onChange={(e) => setEditCategory(e.target.value as CategoryId)}
-                        >
-                          {CATEGORIES.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.short}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="flex gap-2">
-                        <button type="button" className={btnPrimary} onClick={saveEdit}>
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          className={btnSecondary}
-                          onClick={() => setEditingId(null)}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </li>
-                  ) : (
-                    <li key={item.id} className="flex items-center justify-between gap-2 py-2.5">
-                      <span className="truncate text-sm font-medium text-slate-700">
-                        {item.name}
-                      </span>
-                      <span className="flex items-center gap-1.5">
-                        <span className="text-sm font-semibold text-slate-900">
-                          {formatMoney(item.amount, currency)}
-                        </span>
-                        <button
-                          type="button"
-                          aria-label={`Edit ${item.name}`}
-                          onClick={() => startEdit(item.id)}
-                          className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label={`Delete ${item.name}`}
-                          onClick={() => removeBudgetItem(month, item.id)}
-                          className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </span>
-                    </li>
-                  ),
-                )}
-              </ul>
-
-              {items.length === 0 ? (
-                <p className="py-4 text-center text-[11px] text-slate-400">
-                  No items in this category yet.
-                </p>
-              ) : null}
-            </Card>
-          ))}
-        </div>
-      )}
-
-      {/* data / backup */}
-      <Card>
-        <CardHeader
-          title="Backup & data"
-          subtitle="Mudget stores everything in this browser only"
-        />
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className={btnSecondary} onClick={handleExport}>
-            <Download className="h-4 w-4" /> Export JSON
-          </button>
-          <label className={`${btnSecondary} cursor-pointer`}>
-            <Upload className="h-4 w-4" /> Import JSON
-            <input
-              type="file"
-              accept="application/json"
-              className="hidden"
-              onChange={handleImport}
+              value={ruleForm.name}
+              placeholder="e.g. 70/20/10"
+              onChange={(event) =>
+                setRuleForm({ ...ruleForm, name: event.target.value })
+              }
+              autoFocus
             />
           </label>
-          <button
-            type="button"
-            className={`${btnSecondary} !text-rose-600 hover:!bg-rose-50`}
-            onClick={handleReset}
-          >
-            <RotateCcw className="h-4 w-4" /> Delete all data
-          </button>
+
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className={labelClass + " mb-0"}>Categories</span>
+              <span
+                className={clsx(
+                  "rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ring-inset",
+                  Math.round(ruleTotal) === 100
+                    ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                    : "bg-rose-50 text-rose-600 ring-rose-200",
+                )}
+              >
+                Total {ruleTotal}%
+              </span>
+            </div>
+
+            <div className="space-y-2.5">
+              <AnimatePresence initial={false}>
+                {ruleForm.categories.map((row, index) => (
+                  <motion.div
+                    key={index}
+                    layout
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, x: -12 }}
+                    transition={{ duration: 0.22, ease: EASE }}
+                    className="rounded-2xl border border-slate-200 bg-slate-50/60 p-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <input
+                        className={clsx(inputClass, "flex-1 bg-white")}
+                        value={row.label}
+                        placeholder="Label"
+                        onChange={(event) => {
+                          const categories = [...ruleForm.categories];
+                          categories[index] = {
+                            ...row,
+                            label: event.target.value,
+                          };
+                          setRuleForm({ ...ruleForm, categories });
+                        }}
+                      />
+                      <div className="relative w-20 shrink-0">
+                        <input
+                          type="number"
+                          min="1"
+                          max="100"
+                          className={clsx(inputClass, "bg-white pr-6 text-right")}
+                          value={row.percent}
+                          onChange={(event) => {
+                            const categories = [...ruleForm.categories];
+                            categories[index] = {
+                              ...row,
+                              percent: event.target.value,
+                            };
+                            setRuleForm({ ...ruleForm, categories });
+                          }}
+                        />
+                        <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400">
+                          %
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="Remove category"
+                        disabled={ruleForm.categories.length <= 1}
+                        onClick={() =>
+                          setRuleForm({
+                            ...ruleForm,
+                            categories: ruleForm.categories.filter(
+                              (_, i) => i !== index,
+                            ),
+                          })
+                        }
+                        className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 transition hover:bg-rose-50 hover:text-rose-600 disabled:opacity-30"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+
+                    <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                      {COLOR_TOKENS.map((token) => (
+                        <ColorDot
+                          key={token}
+                          token={token}
+                          barClass={colorStyle(token).bar}
+                          active={row.color === token}
+                          onClick={() => {
+                            const categories = [...ruleForm.categories];
+                            categories[index] = { ...row, color: token };
+                            setRuleForm({ ...ruleForm, categories });
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+
+            <button
+              type="button"
+              className={clsx(btnGhost, "mt-2.5 w-full border border-dashed border-slate-300")}
+              onClick={() =>
+                setRuleForm({
+                  ...ruleForm,
+                  categories: [
+                    ...ruleForm.categories,
+                    { label: "", percent: "0", color: COLOR_TOKENS[0] },
+                  ],
+                })
+              }
+            >
+              <Plus className="h-4 w-4" />
+              Add category
+            </button>
+          </div>
         </div>
-        <p className="mt-3 flex items-start gap-1.5 text-[11px] text-slate-500">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
-          Data lives in this device's browser. Export a backup before switching browsers or
-          clearing site data.
-        </p>
-      </Card>
+      </Modal>
+
+      {/* ------------------------------------------------------- item modal */}
+      <Modal
+        open={itemModal}
+        onClose={() => setItemModal(false)}
+        title={itemForm?.id ? "Edit planned item" : "Add planned item"}
+        subtitle={monthLabel(month)}
+        footer={
+          <>
+            <button
+              type="button"
+              className={btnSecondary}
+              onClick={() => setItemModal(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className={btnPrimary}
+              disabled={additem.busy || editItem.busy}
+              onClick={submitItem}
+            >
+              <Check className="h-4 w-4" />
+              {additem.busy || editItem.busy
+                ? "Saving…"
+                : itemForm?.id
+                  ? "Save changes"
+                  : "Add item"}
+            </button>
+          </>
+        }
+      >
+        {itemForm ? (
+          <div className="grid gap-3.5 sm:grid-cols-2">
+            <label className="block sm:col-span-2">
+              <span className={labelClass}>Item name</span>
+              <input
+                className={inputClass}
+                value={itemForm.name}
+                placeholder="e.g. Electricity bill"
+                onChange={(event) =>
+                  setItemForm({ ...itemForm, name: event.target.value })
+                }
+                autoFocus
+              />
+            </label>
+            <label className="block">
+              <span className={labelClass}>Amount</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                inputMode="decimal"
+                className={inputClass}
+                value={itemForm.amount}
+                placeholder="0"
+                onChange={(event) =>
+                  setItemForm({ ...itemForm, amount: event.target.value })
+                }
+              />
+            </label>
+            <label className="block">
+              <span className={labelClass}>Category</span>
+              <CategorySelect
+                categories={categories}
+                value={itemForm.categoryKey}
+                onChange={(key) => setItemForm({ ...itemForm, categoryKey: key })}
+              />
+            </label>
+          </div>
+        ) : null}
+      </Modal>
     </div>
+  );
+}
+
+function IconAction({
+  children,
+  label,
+  onClick,
+  danger,
+  armed,
+  disabled,
+}: {
+  children: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  armed?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <motion.button
+      type="button"
+      aria-label={label}
+      onClick={onClick}
+      disabled={disabled}
+      whileTap={{ scale: 0.9 }}
+      className={clsx(
+        "grid h-8 w-8 place-items-center rounded-lg transition disabled:cursor-not-allowed disabled:opacity-30",
+        armed
+          ? "bg-rose-600 text-white"
+          : danger
+            ? "text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+            : "text-slate-400 hover:bg-indigo-50 hover:text-indigo-600",
+      )}
+    >
+      {children}
+    </motion.button>
   );
 }

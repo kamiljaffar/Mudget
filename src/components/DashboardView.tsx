@@ -1,334 +1,432 @@
 "use client";
 
 import Link from "next/link";
-import { AlertTriangle, ArrowRight, PieChart, Plus, TrendingUp } from "@/components/icons";
+import clsx from "clsx";
+import { motion } from "framer-motion";
+import {
+  ArrowUpRight,
+  CalendarDays,
+  PiggyBank,
+  Plus,
+  Receipt,
+  Target,
+  TrendingUp,
+  Wallet,
+} from "@/components/icons";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
 import {
   Card,
   CardHeader,
   Chip,
-  EmptyState,
+  EASE,
+  FadeIn,
   PageHeader,
   ProgressBar,
+  Stagger,
+  StaggerItem,
   StatCard,
 } from "@/components/ui";
-import { categoryStats, itemStats, monthSummary } from "@/lib/calc";
-import { formatMoney, monthLabel } from "@/lib/format";
-import { useApp } from "@/lib/store";
+import { categoryStats, monthSummary, expensesOfMonth } from "@/lib/calc";
+import { formatMoney, monthLabel, dayLabel } from "@/lib/format";
+import { useMonth } from "@/lib/providers";
+import type { Workspace } from "@/lib/types";
 
-export function DashboardView() {
-  const { state, hydrated } = useApp();
+const STATUS_BAR: Record<string, string> = {
+  ok: "bg-emerald-500",
+  warning: "bg-amber-500",
+  over: "bg-rose-500",
+  unset: "bg-slate-300",
+};
 
-  if (!hydrated) {
+export function DashboardView({ workspace }: { workspace: Workspace }) {
+  const { month } = useMonth();
+  const currency = workspace.profile.currency;
+  const summary = monthSummary(workspace, month);
+  const stats = categoryStats(workspace, month);
+  const recent = expensesOfMonth(workspace, month).slice(0, 5);
+
+  const usedPercent =
+    summary.income > 0 ? (summary.spent / summary.income) * 100 : 0;
+
+  return (
+    <div className="space-y-5">
+      <PageHeader
+        title={`Hello, ${workspace.profile.name.split(" ")[0]}`}
+        subtitle={`Here is how ${monthLabel(month)} is going.`}
+      >
+        <MonthSwitcher />
+      </PageHeader>
+
+      {/* hero */}
+      <FadeIn>
+        <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-600 via-indigo-600 to-violet-700 p-5 text-white shadow-xl shadow-indigo-600/25 sm:p-6">
+          <span
+            aria-hidden
+            className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/10 blur-2xl"
+          />
+          <span
+            aria-hidden
+            className="pointer-events-none absolute -bottom-24 -left-10 h-56 w-56 rounded-full bg-violet-400/20 blur-2xl"
+          />
+
+          <div className="relative flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-white/70">
+                Remaining this month
+              </p>
+              <motion.p
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, ease: EASE }}
+                className="mt-1.5 text-4xl font-black tracking-tight sm:text-5xl"
+              >
+                {formatMoney(summary.remaining, currency)}
+              </motion.p>
+              <p className="mt-1.5 text-xs text-white/70">
+                {formatMoney(summary.income, currency)} income ·{" "}
+                {formatMoney(summary.spent, currency)} spent
+              </p>
+            </div>
+
+            <div className="flex flex-col items-end gap-2">
+              <Link
+                href="/log"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/25 transition hover:bg-white/25 active:scale-[0.98]"
+              >
+                <Plus className="h-4 w-4" />
+                Add expense
+              </Link>
+              <Link
+                href="/budget"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/25 transition hover:bg-white/25 active:scale-[0.98]"
+              >
+                <Target className="h-4 w-4" />
+                Plan budget
+              </Link>
+            </div>
+          </div>
+
+          <div className="relative mt-5">
+            <div className="mb-1.5 flex items-center justify-between text-[11px] font-medium text-white/75">
+              <span>{Math.round(usedPercent)}% of income used</span>
+              <span>{summary.daysLeft} days left</span>
+            </div>
+            <div className="h-3 w-full overflow-hidden rounded-full bg-white/20">
+              <motion.div
+                className="h-full rounded-full bg-gradient-to-r from-emerald-300 to-emerald-400"
+                initial={{ width: 0 }}
+                animate={{ width: `${Math.min(100, usedPercent)}%` }}
+                transition={{ duration: 1.1, ease: EASE }}
+              />
+            </div>
+          </div>
+        </section>
+      </FadeIn>
+
+      {/* stat cards */}
+      <Stagger className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {[
+          {
+            label: "Income",
+            value: formatMoney(summary.income, currency),
+            hint: monthLabel(month),
+            icon: <Wallet className="h-4 w-4" />,
+          },
+          {
+            label: "Spent",
+            value: formatMoney(summary.spent, currency),
+            hint: `${summary.transactionCount} transactions`,
+            accent: "text-rose-600",
+            icon: <Receipt className="h-4 w-4" />,
+          },
+          {
+            label: "Budgeted",
+            value: formatMoney(summary.budgeted, currency),
+            hint: `${summary.daysTotal} day month`,
+            accent: "text-indigo-600",
+            icon: <Target className="h-4 w-4" />,
+          },
+          {
+            label: "Daily average",
+            value: formatMoney(summary.dailyAverage, currency),
+            hint:
+              summary.isCurrentMonth && summary.projected > 0
+                ? `Projected ${formatMoney(summary.projected, currency)}`
+                : `${summary.uniqueItems} unique items`,
+            accent: "text-emerald-600",
+            icon: <TrendingUp className="h-4 w-4" />,
+          },
+        ].map((card) => (
+          <StaggerItem key={card.label}>
+            <StatCard {...card} />
+          </StaggerItem>
+        ))}
+      </Stagger>
+
+      {/* rule breakdown */}
+      <FadeIn delay={0.1}>
+        <Card
+          hover
+          className={
+            workspace.activeRule ? undefined : "border-dashed border-slate-300"
+          }
+        >
+          <CardHeader
+            icon={<Target className="h-4 w-4" />}
+            title={
+              workspace.activeRule
+                ? `${workspace.activeRule.name} rule`
+                : "No rule selected"
+            }
+            subtitle={
+              workspace.activeRule
+                ? "Har category ki limit vs asal kharcha."
+                : "Budget tab se koi rule select karein."
+            }
+            action={
+              <Link
+                href="/budget"
+                className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 transition hover:text-indigo-500"
+              >
+                Rules <ArrowUpRight className="h-3.5 w-3.5" />
+              </Link>
+            }
+          />
+
+          <div className="space-y-4">
+            {stats.map((stat, index) => (
+              <motion.div
+                key={stat.info.key}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4, delay: 0.05 * index, ease: EASE }}
+              >
+                <div className="mb-1.5 flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span
+                      className={clsx(
+                        "h-2.5 w-2.5 shrink-0 rounded-full",
+                        stat.info.bar,
+                      )}
+                    />
+                    <span className="truncate text-sm font-semibold text-slate-800">
+                      {stat.info.label}
+                    </span>
+                    {stat.info.percent > 0 ? (
+                      <Chip className="bg-slate-50 text-slate-500 ring-slate-200">
+                        {stat.info.percent}%
+                      </Chip>
+                    ) : null}
+                    {stat.status === "over" ? (
+                      <Chip className="bg-rose-50 text-rose-600 ring-rose-200">
+                        over limit
+                      </Chip>
+                    ) : null}
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-slate-900">
+                      {formatMoney(stat.spent, currency)}
+                      <span className="text-xs font-medium text-slate-400">
+                        {" "}
+                        / {formatMoney(stat.limit, currency)}
+                      </span>
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      {stat.remaining >= 0
+                        ? `${formatMoney(stat.remaining, currency)} left`
+                        : `${formatMoney(Math.abs(stat.remaining), currency)} over`}
+                    </p>
+                  </div>
+                </div>
+                <ProgressBar
+                  percent={stat.usedPercent}
+                  barClass={STATUS_BAR[stat.status] ?? "bg-indigo-500"}
+                  delay={0.1 + index * 0.07}
+                />
+                {stat.budgeted > 0 ? (
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Planned {formatMoney(stat.budgeted, currency)} of{" "}
+                    {formatMoney(stat.limit, currency)}
+                  </p>
+                ) : null}
+              </motion.div>
+            ))}
+          </div>
+        </Card>
+      </FadeIn>
+
+      {/* recent activity */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <FadeIn delay={0.15}>
+          <Card className="h-full">
+            <CardHeader
+              icon={<Receipt className="h-4 w-4" />}
+              title="Recent expenses"
+              subtitle={`${monthLabel(month)} · latest ${recent.length}`}
+              action={
+                <Link
+                  href="/log"
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 transition hover:text-indigo-500"
+                >
+                  Open log <ArrowUpRight className="h-3.5 w-3.5" />
+                </Link>
+              }
+            />
+            {recent.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-slate-300 px-4 py-8 text-center">
+                <p className="text-sm font-semibold text-slate-700">
+                  Abhi tak koi expense nahi
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Pehla kharcha add karein ya budget item ko tick karein.
+                </p>
+                <Link
+                  href="/log"
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500 active:scale-95"
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add expense
+                </Link>
+              </div>
+            ) : (
+              <ul className="divide-y divide-slate-100">
+                {recent.map((expense) => {
+                  const info = stats.find((s) => s.info.key === expense.categoryKey);
+                  return (
+                    <li
+                      key={expense.id}
+                      className="flex items-center justify-between gap-3 py-2.5"
+                    >
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <span
+                          className={clsx(
+                            "h-8 w-1.5 shrink-0 rounded-full",
+                            info?.info.bar ?? "bg-slate-300",
+                          )}
+                        />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-slate-800">
+                            {expense.item}
+                          </p>
+                          <p className="truncate text-[11px] text-slate-500">
+                            {dayLabel(expense.date)} · {info?.info.label ?? expense.categoryKey}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="shrink-0 text-sm font-bold text-slate-900">
+                        {formatMoney(expense.amount, currency)}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
+        </FadeIn>
+
+        <FadeIn delay={0.2}>
+          <Card className="h-full">
+            <CardHeader
+              icon={<PiggyBank className="h-4 w-4" />}
+              title="Upcoming plan"
+              subtitle="Is mahine ke budgeted items"
+              action={
+                <Link
+                  href="/budget"
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 transition hover:text-indigo-500"
+                >
+                  Manage <ArrowUpRight className="h-3.5 w-3.5" />
+                </Link>
+              }
+            />
+            <PlanPreview workspace={workspace} month={month} />
+          </Card>
+        </FadeIn>
+      </div>
+    </div>
+  );
+}
+
+function PlanPreview({ workspace, month }: { workspace: Workspace; month: string }) {
+  const currency = workspace.profile.currency;
+  const items = workspace.items.filter((item) => item.month === month);
+  const pending = items.filter((item) => !item.expenseId);
+  const done = items.filter((item) => item.expenseId);
+
+  if (items.length === 0) {
     return (
-      <div className="grid gap-4">
-        <div className="h-10 w-56 animate-pulse rounded-xl bg-slate-200" />
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="h-24 animate-pulse rounded-2xl bg-slate-200" />
-          ))}
-        </div>
-        <div className="h-64 animate-pulse rounded-2xl bg-slate-200" />
+      <div className="rounded-2xl border border-dashed border-slate-300 px-4 py-8 text-center">
+        <p className="text-sm font-semibold text-slate-700">
+          Planning shuru nahi hui
+        </p>
+        <p className="mt-1 text-xs text-slate-500">
+          Budget tab mein items add karein — poori ho jayein to tick dabayein.
+        </p>
+        <Link
+          href="/budget"
+          className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-indigo-500 active:scale-95"
+        >
+          <Target className="h-3.5 w-3.5" /> Open budget
+        </Link>
       </div>
     );
   }
 
-  const month = state.selectedMonth;
-  const currency = state.currency;
-  const summary = monthSummary(state, month);
-  const stats = categoryStats(state, month);
-  const topItems = itemStats(state, month).slice(0, 5);
-  const recent = state.expenses
-    .filter((e) => e.date.slice(0, 7) === month)
-    .slice()
-    .sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? 1 : -1))
-    .slice(0, 6);
-  const over = stats.filter((s) => s.status === "over");
-
-  const isEmpty = summary.income === 0 && summary.transactionCount === 0;
-
   return (
-    <div className="grid gap-5">
-      <PageHeader
-        title="Dashboard"
-        subtitle={`${monthLabel(month)} · ${summary.transactionCount} transactions logged`}
-      >
-        <MonthSwitcher />
-        <Link
-          href="/log"
-          className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 active:scale-95"
-        >
-          <Plus className="h-4 w-4" />
-          <span className="hidden sm:inline">Add expense</span>
-          <span className="sm:hidden">Log</span>
-        </Link>
-      </PageHeader>
+    <div className="space-y-3">
+      <div className="flex items-center justify-between rounded-2xl bg-slate-50 px-3.5 py-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Completed
+          </p>
+          <p className="text-lg font-bold text-slate-900">
+            {done.length}
+            <span className="text-xs font-medium text-slate-400"> / {items.length}</span>
+          </p>
+        </div>
+        <div className="w-32">
+          <ProgressBar
+            percent={items.length ? (done.length / items.length) * 100 : 0}
+            barClass="bg-indigo-500"
+          />
+          <p className="mt-1 text-right text-[11px] text-slate-500">
+            {formatMoney(
+              done.reduce((sum, item) => sum + item.amount, 0),
+              currency,
+            )}{" "}
+            logged
+          </p>
+        </div>
+      </div>
 
-      {isEmpty ? (
-        <EmptyState
-          icon={<PieChart className="h-10 w-10" />}
-          title="Let's set up this month's budget"
-          description="Enter your monthly income and your pre-defined budget items. Mudget will split it with the 60 / 25 / 15 rule and track every daily expense against it."
-          action={
-            <Link
-              href="/budget"
-              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500"
-            >
-              Open Monthly Budget <ArrowRight className="h-4 w-4" />
-            </Link>
-          }
-        />
-      ) : (
-        <>
-          {over.length > 0 ? (
-            <div className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4">
-              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-rose-500" />
-              <div className="text-sm">
-                <p className="font-semibold text-rose-800">
-                  {over.length === 1
-                    ? "One category is over its 60/25/15 limit"
-                    : `${over.length} categories are over their 60/25/15 limits`}
-                </p>
-                <p className="mt-0.5 text-xs text-rose-700">
-                  {over
-                    .map(
-                      (s) =>
-                        `${s.info.label}: over by ${formatMoney(Math.abs(s.remaining), currency)}`,
-                    )
-                    .join(" · ")}
-                </p>
-              </div>
+      <ul className="space-y-2">
+        {pending.slice(0, 5).map((item) => (
+          <li
+            key={item.id}
+            className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-white px-3 py-2"
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <CalendarDays className="h-4 w-4 shrink-0 text-slate-300" />
+              <span className="truncate text-sm font-medium text-slate-700">
+                {item.name}
+              </span>
             </div>
-          ) : null}
+            <span className="shrink-0 text-sm font-semibold text-slate-900">
+              {formatMoney(item.amount, currency)}
+            </span>
+          </li>
+        ))}
+        {pending.length === 0 ? (
+          <li className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-3 text-xs font-medium text-emerald-700">
+            Sab planned items complete ho chuke hain. Shabash! 🎉
+          </li>
+        ) : null}
+      </ul>
 
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <StatCard
-              label="Monthly income"
-              value={formatMoney(summary.income, currency)}
-              hint={monthLabel(month)}
-            />
-            <StatCard
-              label="Total spent"
-              value={formatMoney(summary.spent, currency)}
-              accent="text-rose-600"
-              hint={`${summary.transactionCount} transactions`}
-              icon={<TrendingUp className="h-4 w-4" />}
-            />
-            <StatCard
-              label="Remaining"
-              value={formatMoney(summary.remaining, currency)}
-              accent={summary.remaining < 0 ? "text-rose-600" : "text-emerald-600"}
-              hint={
-                summary.income > 0
-                  ? `${Math.max(0, Math.round((summary.spent / summary.income) * 100))}% of income used`
-                  : "Set income to see %"
-              }
-            />
-            <StatCard
-              label={summary.isCurrentMonth ? "Projected spend" : "Month total"}
-              value={formatMoney(summary.projected, currency)}
-              accent="text-indigo-600"
-              hint={
-                summary.isCurrentMonth
-                  ? `${formatMoney(summary.dailyAverage, currency)}/day avg · ${summary.daysLeft} days left`
-                  : `Avg ${formatMoney(summary.dailyAverage, currency)}/day`
-              }
-            />
-          </div>
-
-          {/* 60 / 25 / 15 rule bar */}
-          <Card>
-            <CardHeader
-              title="The 60 / 25 / 15 rule"
-              subtitle="How this month's income is allowed to be split"
-              action={
-                <Chip className="bg-indigo-50 text-indigo-700 ring-indigo-200">
-                  Income {formatMoney(summary.income, currency)}
-                </Chip>
-              }
-            />
-            <div className="flex h-3 w-full overflow-hidden rounded-full bg-slate-100">
-              {stats.map((s) => (
-                <div
-                  key={s.info.id}
-                  className={`${s.info.bar} h-full transition-all duration-500`}
-                  style={{ width: `${s.info.percent}%` }}
-                  title={`${s.info.label} ${s.info.percent}%`}
-                />
-              ))}
-            </div>
-            <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-              {stats.map((s) => (
-                <div key={s.info.id} className="rounded-xl bg-slate-50 px-2 py-2.5">
-                  <p className={`text-[11px] font-semibold ${s.info.text}`}>
-                    {s.info.percent}% {s.info.short}
-                  </p>
-                  <p className="mt-0.5 text-xs font-bold text-slate-800 sm:text-sm">
-                    {formatMoney(s.limit, currency)}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          {/* category cards */}
-          <div className="grid gap-3 md:grid-cols-3">
-            {stats.map((s) => {
-              const barColor =
-                s.status === "over"
-                  ? "bg-rose-500"
-                  : s.status === "warning"
-                    ? "bg-amber-500"
-                    : s.info.bar;
-              return (
-                <Card key={s.info.id} className={s.info.card}>
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <p className="text-sm font-bold text-slate-900">{s.info.label}</p>
-                      <p className="text-[11px] text-slate-500">{s.info.hint}</p>
-                    </div>
-                    <Chip className={s.info.chip}>{s.info.percent}%</Chip>
-                  </div>
-
-                  <div className="mt-4 flex items-end justify-between gap-2">
-                    <div>
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                        Spent
-                      </p>
-                      <p className="text-lg font-bold text-slate-900">
-                        {formatMoney(s.spent, currency)}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                        Left
-                      </p>
-                      <p
-                        className={`text-lg font-bold ${s.remaining < 0 ? "text-rose-600" : "text-emerald-600"}`}
-                      >
-                        {formatMoney(s.remaining, currency)}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="mt-3">
-                    <ProgressBar percent={s.usedPercent} barClass={barColor} />
-                    <div className="mt-1.5 flex items-center justify-between text-[11px] text-slate-500">
-                      <span>
-                        {formatMoney(s.spent, currency)} of {formatMoney(s.limit, currency)}
-                      </span>
-                      <span className="font-semibold text-slate-600">
-                        {Math.round(s.usedPercent)}%
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-[11px]">
-                    <span className="text-slate-500">
-                      Planned: <b className="text-slate-700">{formatMoney(s.budgeted, currency)}</b>
-                    </span>
-                    {s.status === "over" ? (
-                      <Chip className="bg-rose-50 text-rose-700 ring-rose-200">Over limit</Chip>
-                    ) : s.status === "warning" ? (
-                      <Chip className="bg-amber-50 text-amber-700 ring-amber-200">
-                        Getting close
-                      </Chip>
-                    ) : (
-                      <Chip className="bg-emerald-50 text-emerald-700 ring-emerald-200">On track</Chip>
-                    )}
-                  </div>
-                </Card>
-              );
-            })}
-          </div>
-
-          <div className="grid gap-3 lg:grid-cols-2">
-            <Card>
-              <CardHeader
-                title="Recent activity"
-                subtitle="Latest entries from the daily log"
-                action={
-                  <Link
-                    href="/log"
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 hover:text-indigo-500"
-                  >
-                    View all <ArrowRight className="h-3.5 w-3.5" />
-                  </Link>
-                }
-              />
-              {recent.length === 0 ? (
-                <p className="py-6 text-center text-xs text-slate-400">
-                  No expenses logged this month yet.
-                </p>
-              ) : (
-                <ul className="divide-y divide-slate-100">
-                  {recent.map((e) => (
-                    <li key={e.id} className="flex items-center justify-between gap-3 py-2.5">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-slate-800">{e.item}</p>
-                        <p className="text-[11px] text-slate-400">
-                          {e.date} · {e.category === "basic" ? "Basic" : e.category === "wants" ? "Wants" : "Loans"}
-                        </p>
-                      </div>
-                      <span className="shrink-0 text-sm font-semibold text-slate-900">
-                        −{formatMoney(e.amount, currency)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </Card>
-
-            <Card>
-              <CardHeader
-                title="Top spending items"
-                subtitle="Where the money went this month"
-                action={
-                  <Link
-                    href="/reports"
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 hover:text-indigo-500"
-                  >
-                    Reports <ArrowRight className="h-3.5 w-3.5" />
-                  </Link>
-                }
-              />
-              {topItems.length === 0 ? (
-                <p className="py-6 text-center text-xs text-slate-400">
-                  Log a few expenses to see rankings.
-                </p>
-              ) : (
-                <ul className="space-y-2.5">
-                  {topItems.map((item) => {
-                    const max = topItems[0].total || 1;
-                    const info =
-                      item.category === "basic"
-                        ? stats[0].info
-                        : item.category === "wants"
-                          ? stats[1].info
-                          : stats[2].info;
-                    return (
-                      <li key={item.key}>
-                        <div className="flex items-center justify-between gap-2 text-sm">
-                          <span className="truncate font-medium text-slate-700">{item.name}</span>
-                          <span className="shrink-0 font-semibold text-slate-900">
-                            {formatMoney(item.total, currency)}
-                          </span>
-                        </div>
-                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-                          <div
-                            className={`h-full rounded-full ${info.bar}`}
-                            style={{ width: `${Math.max(6, (item.total / max) * 100)}%` }}
-                          />
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </Card>
-          </div>
-        </>
-      )}
+      {pending.length > 5 ? (
+        <p className="text-[11px] text-slate-400">
+          +{pending.length - 5} more pending…
+        </p>
+      ) : null}
     </div>
   );
 }
